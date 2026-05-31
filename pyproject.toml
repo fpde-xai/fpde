@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fpde"
+version = "0.1.0"
+description = "Feature Prototype Direction Explainer for prototype-based feature attribution"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [
+  { name = "Yuki Kato" }
+]
+keywords = [
+  "explainable-ai",
+  "feature-attribution",
+  "prototype-based",
+  "interpretable-machine-learning",
+  "python"
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+  "numpy",
+  "scikit-learn",
+  "pytest"
+]
+
+[project.urls]
+Repository = "https://github.com/fpde-xai/fpde"
+# Archive = "https://doi.org/10.5281/zenodo.20455883"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
+explicit = true

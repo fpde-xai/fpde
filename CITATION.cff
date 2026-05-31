@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+title: "Feature Prototype Direction Explainer (FPDE)"
+message: "If you use FPDE in academic work, please cite the method or repository as appropriate."
+type: software
+authors:
+  - family-names: Kato
+    given-names: Yuki
+    orcid: "https://orcid.org/0009-0008-8184-7946"
+version: "0.1.0"
+date-released: "2026-05-31"
+# doi: "10.5281/zenodo.20455883"
+url: "https://github.com/fpde-xai/fpde"
+license: Apache-2.0
+keywords:
+  - explainable artificial intelligence
+  - feature attribution
+  - prototype-based explanation

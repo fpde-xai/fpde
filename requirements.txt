@@ -1,0 +1,4 @@
+# Lightweight dependencies for using and testing the FPDE Python package.
+numpy
+scikit-learn
+pytest
