@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/fpde.svg)](https://pypi.org/project/fpde/)
 [![Python versions](https://img.shields.io/pypi/pyversions/fpde.svg)](https://pypi.org/project/fpde/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/fpde-xai/fpde/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/fpde-xai/fpde/blob/main/LICENSE)
 
 Feature Prototype Direction Explainer (FPDE) is a Python package for
 prototype-contrast feature attribution. It explains a classification result by
@@ -126,4 +126,4 @@ Citation metadata is available in [CITATION.cff](https://github.com/fpde-xai/fpd
 
 ## License
 
-FPDE is distributed under the Apache License 2.0. See [LICENSE](https://github.com/fpde-xai/fpde/blob/main/LICENSE).
+FPDE is distributed under a dual license: MIT OR Apache-2.0. You may choose either license. See [LICENSE](https://github.com/fpde-xai/fpde/blob/main/LICENSE), [LICENSE-MIT](https://github.com/fpde-xai/fpde/blob/main/LICENSE-MIT), and [LICENSE-APACHE](https://github.com/fpde-xai/fpde/blob/main/LICENSE-APACHE).

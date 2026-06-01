@@ -64,5 +64,6 @@ Runtime and test dependencies are intentionally lightweight:
 
 ## Licensing
 
-The repository is distributed under the Apache License 2.0. The license text is
-available in `LICENSE`.
+The repository is distributed under a dual license: MIT OR Apache-2.0. You may
+choose either license. The license notice is available in `LICENSE`, with full
+texts in `LICENSE-MIT` and `LICENSE-APACHE`.

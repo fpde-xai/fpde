@@ -15,7 +15,7 @@ Initial open-source package layout for FPDE.
   `FPDEEngine`.
 - Minimal scikit-learn example.
 - Pytest coverage for core behavior.
-- Apache License 2.0 license text.
+- MIT OR Apache-2.0 dual license text.
 - Citation metadata.
 - Repository metadata documentation.
 

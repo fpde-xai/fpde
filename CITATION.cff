@@ -10,7 +10,7 @@ version: "0.1.0"
 date-released: "2026-05-31"
 # doi: "10.5281/zenodo.20455883"
 url: "https://github.com/fpde-xai/fpde"
-license: Apache-2.0
+license: "MIT OR Apache-2.0"
 keywords:
   - explainable artificial intelligence
   - feature attribution
