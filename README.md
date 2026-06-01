@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/fpde.svg)](https://pypi.org/project/fpde/)
 [![Python versions](https://img.shields.io/pypi/pyversions/fpde.svg)](https://pypi.org/project/fpde/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/fpde-xai/fpde/blob/main/LICENSE)
 
 Feature Prototype Direction Explainer (FPDE) is a Python package for
 prototype-contrast feature attribution. It explains a classification result by
@@ -90,16 +90,16 @@ with scikit-learn.
 
 ## Documentation
 
-- [Method overview](docs/method_overview.md): core FPDE concepts and variants.
-- [API reference](docs/api_reference.md): public functions, classes, parameters,
+- [Method overview](https://github.com/fpde-xai/fpde/blob/main/docs/method_overview.md): core FPDE concepts and variants.
+- [API reference](https://github.com/fpde-xai/fpde/blob/main/docs/api_reference.md): public functions, classes, parameters,
   and result objects.
-- [Reproducibility checklist](docs/reproducibility_checklist.md): what to record
+- [Reproducibility checklist](https://github.com/fpde-xai/fpde/blob/main/docs/reproducibility_checklist.md): what to record
   when reporting FPDE experiments.
-- [Data and code availability](docs/data_and_code_availability_statement.md):
+- [Data and code availability](https://github.com/fpde-xai/fpde/blob/main/docs/data_and_code_availability_statement.md):
   repository and dataset availability statement.
-- [Repository metadata](docs/repository_metadata.md): project URL, description,
+- [Repository metadata](https://github.com/fpde-xai/fpde/blob/main/docs/repository_metadata.md): project URL, description,
   topics, and important paths.
-- [Release notes](RELEASE_NOTES.md): package history.
+- [Release notes](https://github.com/fpde-xai/fpde/blob/main/RELEASE_NOTES.md): package history.
 
 ## Test The Package
 
@@ -122,8 +122,8 @@ The Docker command runs the test suite and the minimal example.
 ## Cite FPDE
 
 If you use FPDE in academic work, cite the software or method as appropriate.
-Citation metadata is available in [CITATION.cff](CITATION.cff).
+Citation metadata is available in [CITATION.cff](https://github.com/fpde-xai/fpde/blob/main/CITATION.cff).
 
 ## License
 
-FPDE is distributed under the Apache License 2.0. See [LICENSE](LICENSE).
+FPDE is distributed under the Apache License 2.0. See [LICENSE](https://github.com/fpde-xai/fpde/blob/main/LICENSE).
