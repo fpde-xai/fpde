@@ -1,0 +1,47 @@
+name: Publish to TestPyPI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish to TestPyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/fpde/
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Install package
+        run: uv sync
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Run minimal example
+        run: uv run python examples/minimal_fpde_example.py
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Publish to TestPyPI
+        run: uv publish --index testpypi --trusted-publishing always
