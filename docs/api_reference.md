@@ -256,7 +256,7 @@ Selection behavior:
 - `"diff"`: nearest positive and nearest negative prototypes by squared
   distance.
 - `"cos"`: most cosine-similar positive and negative prototypes.
-- `"hyb_grid"`: Diff-style prototype selection.
+- `"hyb_grid"`: Diff prototype selection.
 
 Returns `(positive_index, negative_index)`.
 
@@ -383,6 +383,315 @@ Returns a dictionary containing:
 - `insertion_auc`
 - `combined_score`
 
+## Plotting Helpers
+
+The plotting helpers are exported from `fpde` and `fpde.core`, and are also
+available from `fpde.plotting`. They require matplotlib only when called without
+an existing axes object. The local bar and heatmap cover the compact
+local contribution view, while the waterfall and summary helpers provide
+cumulative and batch-level contribution plots. The similarity helpers provide
+FPDE-native views of representative sample and target/rival prototype
+similarity distributions.
+
+Install the optional plotting dependency with:
+
+```bash
+python -m pip install "fpde[plot]"
+```
+
+### `plot_attributions`
+
+```python
+plot_attributions(
+    attributions,
+    *,
+    feature_names=None,
+    top_k=20,
+    normalize=False,
+    sort=True,
+    ax=None,
+    title=None,
+)
+```
+
+Plots a signed horizontal bar chart for a 1D attribution vector or an
+`FPDEExplanation`. Positive values support the target class; negative values
+support the rival class.
+
+### `plot_attribution_waterfall`
+
+```python
+plot_attribution_waterfall(
+    attributions,
+    *,
+    feature_names=None,
+    top_k=10,
+    base_value=0.0,
+    ax=None,
+    title=None,
+)
+```
+
+Plots a cumulative local explanation from `base_value` to
+`base_value + sum(attributions)`. If `top_k` hides features, their signed
+remainder is shown as an `"other features"` bar.
+
+### `plot_attribution_summary`
+
+```python
+plot_attribution_summary(
+    attributions,
+    *,
+    feature_values=None,
+    feature_names=None,
+    top_k=20,
+    ax=None,
+    title=None,
+)
+```
+
+Plots a batch attribution matrix as a distribution summary ordered by mean
+absolute attribution. Pass `feature_values` with the same shape to color points
+by original feature value.
+
+### `plot_attribution_image`
+
+```python
+plot_attribution_image(
+    attributions,
+    shape=None,
+    *,
+    ax=None,
+    title=None,
+    cmap="coolwarm",
+    colorbar=True,
+    symmetric=True,
+)
+```
+
+Plots attributions as a 2D heatmap. Pass `shape=(height, width)` for flat image
+vectors.
+
+### `plot_perturbation_curves`
+
+```python
+plot_perturbation_curves(curves, *, ax=None, title=None)
+```
+
+Plots the deletion and insertion probability curves returned by
+`perturbation_curves`.
+
+### `prepare_local_contribution_data`
+
+```python
+prepare_local_contribution_data(
+    feature_names,
+    contributions,
+    values=None,
+    *,
+    top_k=10,
+    sort_by="abs",
+)
+```
+
+Formats one FPDE local attribution vector for a signed local contribution view.
+The returned rows include the feature name, display name, signed contribution,
+absolute contribution, direction, and direction label.
+
+### `plot_local_contributions`
+
+```python
+plot_local_contributions(
+    feature_names,
+    contributions,
+    values=None,
+    *,
+    top_k=10,
+    sort_by="abs",
+    ax=None,
+    title=None,
+    xlabel="Contribution",
+)
+```
+
+Plots a signed horizontal bar chart for one FPDE local attribution vector.
+Positive and negative contributions are color-separated, and `x=0` is marked by
+default. The function returns the matplotlib Axes and does not call
+`plt.show()` or save files.
+
+### `plot_similarity_distribution`
+
+```python
+plot_similarity_distribution(
+    similarities,
+    *,
+    target_similarity=None,
+    ax=None,
+    title=None,
+    bins=30,
+)
+```
+
+Plots a histogram of representative-instance similarities. Use
+`target_similarity` to mark the explained sample or selected prototype.
+
+### `compute_prototype_similarities`
+
+```python
+compute_prototype_similarities(X, prototype, metric="cosine")
+```
+
+Computes row-wise similarities between a sample matrix and one prototype.
+
+Supported metrics:
+
+- `"cosine"`: cosine similarity. Rows or prototypes with zero norm receive
+  similarity `0.0`.
+- `"negative_euclidean"`: negative Euclidean distance, so larger values are
+  closer to the prototype.
+
+Returns a 1D NumPy array with one similarity value per row in `X`.
+
+### `plot_prototype_similarity_distribution`
+
+```python
+plot_prototype_similarity_distribution(
+    X,
+    target_prototype,
+    *,
+    rival_prototype=None,
+    x=None,
+    metric="cosine",
+    bins=30,
+    ax=None,
+    title=None,
+)
+```
+
+Plots the distribution of similarities from rows in `X` to a target prototype.
+Pass `rival_prototype` to overlay the rival-prototype distribution, and pass
+`x` to mark the explained sample's position against the target and rival
+prototypes. The returned value is the matplotlib Axes.
+
+## `fpde.plots` Contribution Plot API
+
+`fpde.plots` provides a compact matplotlib API for FPDE contribution arrays.
+Use `show=False` to receive an Axes without displaying it, then save with
+`ax.figure.savefig(...)`.
+
+```python
+from fpde.plots import FPDEPlotExplanation, bar, beeswarm, scatter, waterfall
+
+exp = FPDEPlotExplanation(
+    values=attribution_matrix,
+    data=X_eval,
+    feature_names=feature_names,
+)
+
+ax = beeswarm(exp, show=False)
+ax.figure.savefig("fpde_beeswarm.png", dpi=150, bbox_inches="tight")
+```
+
+### `FPDEPlotExplanation`
+
+```python
+FPDEPlotExplanation(
+    values,
+    base_values=None,
+    data=None,
+    feature_names=None,
+    output_names=None,
+    predictions=None,
+)
+```
+
+Lightweight plotting container for FPDE contribution matrices. Existing FPDE
+result objects with `.attributions` can also be passed directly to plot
+functions as a single-sample explanation.
+
+### `bar`
+
+```python
+bar(
+    explanation=None,
+    values=None,
+    feature_names=None,
+    max_display=10,
+    order="mean_abs",
+    ax=None,
+    show=True,
+    title=None,
+    figsize=None,
+)
+```
+
+Plots local or global contribution importance. A 1D value vector is treated as
+one local explanation; a 2D matrix is summarized by feature importance.
+
+### `beeswarm`
+
+```python
+beeswarm(
+    explanation=None,
+    values=None,
+    data=None,
+    feature_names=None,
+    max_display=10,
+    order="mean_abs",
+    color_by_value=True,
+    ax=None,
+    show=True,
+    title=None,
+    figsize=None,
+)
+```
+
+Plots per-sample contributions grouped by feature. When feature data with the
+same shape as `values` is available, points are colored by the corresponding
+feature value.
+
+### `waterfall`
+
+```python
+waterfall(
+    explanation=None,
+    values=None,
+    base_value=None,
+    prediction=None,
+    feature_names=None,
+    max_display=10,
+    ax=None,
+    show=True,
+    title=None,
+    figsize=None,
+)
+```
+
+Plots one contribution vector from `base_value` to `prediction`. If prediction
+is omitted, it is computed as `base_value + sum(values)`. Hidden features are
+grouped into `"other features"`.
+
+### `scatter`
+
+```python
+scatter(
+    explanation=None,
+    values=None,
+    data=None,
+    feature=None,
+    feature_names=None,
+    color_feature=None,
+    ax=None,
+    show=True,
+    title=None,
+    figsize=None,
+)
+```
+
+Plots one feature's original value against its FPDE contribution. `feature` and
+`color_feature` may be integer indices or names from `feature_names`. If data
+is unavailable, the x-axis falls back to sample index.
+
 ## Result Objects
 
 ### `FPDEExplanation`
@@ -434,7 +743,7 @@ posterior probability.
 | Error | Cause | Fix |
 | --- | --- | --- |
 | `model must implement predict_proba` | A model-dependent operation was called without probability support. | Pass a fitted classifier with `predict_proba`. |
-| `model must expose classes_` | The model does not expose class labels. | Use a scikit-learn-style classifier or add compatible `classes_` metadata. |
+| `model must expose classes_` | The model does not expose class labels. | Use a scikit-learn-compatible classifier or add compatible `classes_` metadata. |
 | `feature dimension mismatch` | Input vectors do not match the fitted training feature count. | Apply the same preprocessing pipeline to training, validation, and explanation data. |
 | `lambda_hyb must be in [0, 1]` | The Hyb-FPDE mixture weight is outside the valid range. | Pass a finite value from 0.0 to 1.0. |
 | `eps must be positive` | Cosine regularization was zero or negative. | Use a positive `eps`, such as `1e-12`. |

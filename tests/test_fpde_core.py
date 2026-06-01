@@ -14,7 +14,17 @@ from fpde import (
     BayesianFPDELambdaSelectionResult,
     FPDEEngine,
     class_mean_prototypes,
+    compute_prototype_similarities,
     explain_with_selected_prototypes,
+    prepare_local_contribution_data,
+    plot_attribution_image,
+    plot_attribution_summary,
+    plot_attribution_waterfall,
+    plot_attributions,
+    plot_local_contributions,
+    plot_perturbation_curves,
+    plot_prototype_similarity_distribution,
+    plot_similarity_distribution,
     perturbation_curves,
     prepare_fpde_context,
     top_two_labels,
@@ -37,14 +47,53 @@ def test_all_fpde_modules_are_importable():
 
 def test_public_module_import_paths_remain_available():
     expected = {
-        "fpde": ["FPDEEngine", "BayesianFPDELambdaSelectionResult", "diff_fpde", "class_mean_prototypes", "top_two_labels"],
-        "fpde.core": ["FPDEEngine", "BayesianFPDELambdaSelectionResult", "diff_fpde", "class_mean_prototypes", "top_two_labels"],
+        "fpde": [
+            "FPDEEngine",
+            "BayesianFPDELambdaSelectionResult",
+            "diff_fpde",
+            "class_mean_prototypes",
+            "top_two_labels",
+            "compute_prototype_similarities",
+            "prepare_local_contribution_data",
+            "plot_attributions",
+            "plot_attribution_waterfall",
+            "plot_attribution_summary",
+            "plot_local_contributions",
+            "plot_prototype_similarity_distribution",
+            "plot_similarity_distribution",
+        ],
+        "fpde.core": [
+            "FPDEEngine",
+            "BayesianFPDELambdaSelectionResult",
+            "diff_fpde",
+            "class_mean_prototypes",
+            "top_two_labels",
+            "compute_prototype_similarities",
+            "prepare_local_contribution_data",
+            "plot_attributions",
+            "plot_attribution_waterfall",
+            "plot_attribution_summary",
+            "plot_local_contributions",
+            "plot_prototype_similarity_distribution",
+            "plot_similarity_distribution",
+        ],
         "fpde.types": ["BayesianFPDELambdaSelectionResult"],
         "fpde.explainers": ["diff_fpde", "cos_fpde", "explain_with_selected_prototypes"],
         "fpde.prototypes": ["class_mean_prototypes", "select_prototype_pair", "prepare_fpde_context"],
         "fpde.metrics": ["regularized_cosine", "top_two_labels", "perturbation_curves"],
         "fpde.engine": ["FPDEEngine"],
         "fpde.utils": ["parse_float_grid"],
+        "fpde.plotting": [
+            "plot_attributions",
+            "plot_attribution_waterfall",
+            "plot_attribution_summary",
+            "plot_attribution_image",
+            "plot_local_contributions",
+            "plot_perturbation_curves",
+            "prepare_local_contribution_data",
+            "plot_prototype_similarity_distribution",
+            "plot_similarity_distribution",
+        ],
     }
     for module_name, names in expected.items():
         module = importlib.import_module(module_name)
@@ -92,6 +141,240 @@ def test_public_module_import_paths_remain_available():
         module = importlib.import_module(module_name)
         for name in names:
             assert not hasattr(module, name), f"{module_name}.{name} should have been removed"
+
+
+class _FakeFigure:
+    def __init__(self):
+        self.colorbar_calls = []
+
+    def colorbar(self, *args, **kwargs):
+        self.colorbar_calls.append((args, kwargs))
+
+
+class _FakeAxes:
+    def __init__(self):
+        self.calls = []
+        self.figure = _FakeFigure()
+
+    def __getattr__(self, name):
+        def recorder(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return "image" if name == "imshow" else "collection" if name == "scatter" else None
+
+        return recorder
+
+
+def test_plotting_helpers_accept_existing_axes_without_matplotlib():
+    ax = _FakeAxes()
+    returned = plot_attributions(
+        [0.2, -0.6, 0.1],
+        feature_names=["a", "b", "c"],
+        top_k=2,
+        ax=ax,
+        title="FPDE",
+    )
+
+    assert returned is ax
+    assert [name for name, _, _ in ax.calls].count("barh") == 1
+    assert any(name == "axvline" for name, _, _ in ax.calls)
+    labels_call = next(args for name, args, _ in ax.calls if name == "set_yticklabels")
+    assert labels_call[0] == ["b", "a"]
+
+    curves_ax = _FakeAxes()
+    curves = {
+        "fractions": [0.0, 0.5, 1.0],
+        "deletion_prob": [0.9, 0.5, 0.2],
+        "insertion_prob": [0.1, 0.6, 0.9],
+    }
+    assert plot_perturbation_curves(curves, ax=curves_ax) is curves_ax
+    assert [name for name, _, _ in curves_ax.calls].count("plot") == 2
+
+    waterfall_ax = _FakeAxes()
+    assert plot_attribution_waterfall([0.5, -0.25, 0.1], feature_names=["a", "b", "c"], ax=waterfall_ax) is waterfall_ax
+    assert [name for name, _, _ in waterfall_ax.calls].count("barh") == 1
+
+    summary_ax = _FakeAxes()
+    attr_matrix = np.array([[0.2, -0.1, 0.4], [0.1, -0.3, 0.2]])
+    values = np.array([[1.0, 2.0, 3.0], [1.5, 2.5, 3.5]])
+    assert plot_attribution_summary(attr_matrix, feature_values=values, ax=summary_ax) is summary_ax
+    assert [name for name, _, _ in summary_ax.calls].count("scatter") == 3
+    assert len(summary_ax.figure.colorbar_calls) == 1
+
+    similarity_ax = _FakeAxes()
+    assert plot_similarity_distribution([0.1, 0.2, 0.5], target_similarity=0.4, ax=similarity_ax) is similarity_ax
+    assert [name for name, _, _ in similarity_ax.calls].count("hist") == 1
+    assert any(name == "axvline" for name, _, _ in similarity_ax.calls)
+
+    prototype_ax = _FakeAxes()
+    assert (
+        plot_prototype_similarity_distribution(
+            [[1.0, 0.0], [0.0, 1.0]],
+            [1.0, 0.0],
+            rival_prototype=[0.0, 1.0],
+            x=[1.0, 0.0],
+            ax=prototype_ax,
+        )
+        is prototype_ax
+    )
+    assert [name for name, _, _ in prototype_ax.calls].count("hist") == 2
+    assert [name for name, _, _ in prototype_ax.calls].count("axvline") == 2
+
+    local_ax = _FakeAxes()
+    assert plot_local_contributions(["a", "b", "c"], [0.2, -0.5, 0.0], values=[1, 2, 3], ax=local_ax) is local_ax
+    assert [name for name, _, _ in local_ax.calls].count("barh") == 1
+    assert any(name == "axvline" for name, _, _ in local_ax.calls)
+
+
+def test_plot_attribution_image_accepts_flat_vector_and_shape():
+    ax = _FakeAxes()
+
+    assert plot_attribution_image([1.0, -1.0, 0.5, -0.5], shape=(2, 2), ax=ax) is ax
+    image_call = next(args for name, args, _ in ax.calls if name == "imshow")
+    assert image_call[0].shape == (2, 2)
+    assert len(ax.figure.colorbar_calls) == 1
+
+
+def test_plotting_helpers_validate_inputs():
+    with pytest.raises(ValueError, match="feature_names length"):
+        plot_attributions([1.0, 2.0], feature_names=["only-one"], ax=_FakeAxes())
+    with pytest.raises(ValueError, match="top_k"):
+        plot_attributions([1.0, 2.0], top_k=0, ax=_FakeAxes())
+    with pytest.raises(ValueError, match="shape is required"):
+        plot_attribution_image([1.0, 2.0], ax=_FakeAxes())
+    with pytest.raises(ValueError, match="missing required keys"):
+        plot_perturbation_curves({"fractions": [0.0]}, ax=_FakeAxes())
+    with pytest.raises(ValueError, match="feature_values shape"):
+        plot_attribution_summary([[1.0, 2.0]], feature_values=[[1.0]], ax=_FakeAxes())
+    with pytest.raises(ValueError, match="base_value"):
+        plot_attribution_waterfall([1.0], base_value=float("nan"), ax=_FakeAxes())
+    with pytest.raises(ValueError, match="bins"):
+        plot_similarity_distribution([0.1, 0.2], bins=0, ax=_FakeAxes())
+    with pytest.raises(ValueError, match="at least one value"):
+        plot_similarity_distribution([], ax=_FakeAxes())
+
+
+def test_prepare_local_contribution_data_sorts_topk_by_absolute_contribution():
+    rows = prepare_local_contribution_data(
+        ["a", "b", "c", "d"],
+        [0.2, -0.8, 0.1, 0.5],
+        top_k=2,
+    )
+
+    assert [row["feature"] for row in rows] == ["b", "d"]
+    assert [row["contribution"] for row in rows] == pytest.approx([-0.8, 0.5])
+
+
+def test_prepare_local_contribution_data_sorts_by_signed_value():
+    rows = prepare_local_contribution_data(
+        ["a", "b", "c"],
+        [0.2, -0.8, 0.5],
+        top_k=3,
+        sort_by="value",
+    )
+
+    assert [row["feature"] for row in rows] == ["c", "a", "b"]
+
+
+def test_prepare_local_contribution_data_direction_and_value_display():
+    rows = prepare_local_contribution_data(
+        ["tempo", "centroid", "zcr"],
+        [0.2, -0.1, 0.0],
+        values=[132.0, 2410.5, 0.07],
+        top_k=3,
+    )
+
+    assert {row["direction"] for row in rows} == {"positive", "negative", "zero"}
+    assert rows[0]["display_name"] == "tempo = 132.0"
+    assert rows[1]["direction_label"] == "opposes prediction"
+    assert rows[2]["direction_label"] == "zero contribution"
+
+
+def test_prepare_local_contribution_data_validates_inputs():
+    with pytest.raises(ValueError, match="feature_names length"):
+        prepare_local_contribution_data(["a"], [0.1, 0.2])
+    with pytest.raises(ValueError, match="values length"):
+        prepare_local_contribution_data(["a", "b"], [0.1, 0.2], values=[1])
+    with pytest.raises(ValueError, match="NaN or inf"):
+        prepare_local_contribution_data(["a"], [float("nan")])
+    with pytest.raises(ValueError, match="top_k"):
+        prepare_local_contribution_data(["a"], [0.1], top_k=0)
+    with pytest.raises(ValueError, match="sort_by"):
+        prepare_local_contribution_data(["a"], [0.1], sort_by="unknown")
+    with pytest.raises(ValueError, match="at least one value"):
+        prepare_local_contribution_data([], [])
+
+
+def test_plot_local_contributions_accepts_existing_axes_and_all_zero_contributions():
+    ax = _FakeAxes()
+
+    assert plot_local_contributions(["a", "b"], [0.0, 0.0], ax=ax, show_values=False) is ax
+    assert [name for name, _, _ in ax.calls].count("barh") == 1
+    labels_call = next(args for name, args, _ in ax.calls if name == "set_yticklabels")
+    assert labels_call[0] == ["b", "a"]
+
+
+def test_plot_local_contributions_without_matplotlib_raises_clear_import_error_when_missing():
+    if importlib.util.find_spec("matplotlib") is not None:
+        return
+
+    with pytest.raises(ImportError, match=r"fpde\[plot\]"):
+        plot_local_contributions(["a"], [0.1])
+
+
+def test_compute_prototype_similarities_cosine_basic_case():
+    similarities = compute_prototype_similarities(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+        [1.0, 0.0],
+        "cosine",
+    )
+
+    np.testing.assert_allclose(similarities, [1.0, 0.0, 1.0 / np.sqrt(2.0)])
+
+
+def test_compute_prototype_similarities_cosine_zero_vectors_are_finite():
+    similarities = compute_prototype_similarities(
+        [[0.0, 0.0], [1.0, 0.0]],
+        [0.0, 0.0],
+        "cosine",
+    )
+
+    np.testing.assert_allclose(similarities, [0.0, 0.0])
+    assert np.all(np.isfinite(similarities))
+
+
+def test_compute_prototype_similarities_negative_euclidean_basic_case():
+    similarities = compute_prototype_similarities(
+        [[1.0, 0.0], [1.0, 2.0]],
+        [1.0, 0.0],
+        "negative_euclidean",
+    )
+
+    np.testing.assert_allclose(similarities, [0.0, -2.0])
+
+
+def test_compute_prototype_similarities_validates_inputs():
+    with pytest.raises(ValueError, match="feature dimension"):
+        compute_prototype_similarities([[1.0, 2.0]], [1.0], "cosine")
+    with pytest.raises(ValueError, match="at least one sample"):
+        compute_prototype_similarities(np.empty((0, 2)), [1.0, 0.0], "cosine")
+    with pytest.raises(ValueError, match="at least one feature"):
+        compute_prototype_similarities(np.empty((2, 0)), [], "cosine")
+    with pytest.raises(ValueError, match="NaN or inf"):
+        compute_prototype_similarities([[1.0, np.nan]], [1.0, 0.0], "cosine")
+    with pytest.raises(ValueError, match="metric"):
+        compute_prototype_similarities([[1.0, 0.0]], [1.0, 0.0], "unknown")
+
+
+def test_plot_prototype_similarity_distribution_accepts_target_only():
+    ax = _FakeAxes()
+
+    assert plot_prototype_similarity_distribution([[1.0, 0.0], [0.0, 1.0]], [1.0, 0.0], ax=ax) is ax
+    assert [name for name, _, _ in ax.calls].count("hist") == 1
+
+
+def test_plot_prototype_similarity_distribution_validates_shapes():
+    with pytest.raises(ValueError, match="feature dimension"):
+        plot_prototype_similarity_distribution([[1.0, 2.0]], [1.0], ax=_FakeAxes())
 
 
 def _fit_classifier(*, n_classes: int, random_state: int = 13):

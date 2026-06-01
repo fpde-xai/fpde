@@ -32,6 +32,11 @@ dependencies = [
   "pytest"
 ]
 
+[project.optional-dependencies]
+plot = [
+  "matplotlib"
+]
+
 [project.urls]
 Repository = "https://github.com/fpde-xai/fpde"
 # Archive = "https://doi.org/10.5281/zenodo.20455883"

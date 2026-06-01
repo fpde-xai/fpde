@@ -11,5 +11,6 @@ from .explainers import *  # noqa: F401,F403
 from .selection import *  # noqa: F401,F403
 from .engine import *  # noqa: F401,F403
 from .utils import *  # noqa: F401,F403
+from .plotting import *  # noqa: F401,F403
 
 from .core import __all__
