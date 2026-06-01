@@ -13,6 +13,7 @@ Initial open-source package layout for FPDE.
   `FPDEEngine`.
 - Hyb-FPDE grid search and validation-based lambda selection through
   `FPDEEngine`.
+- Bayesian-FPDE lambda posterior selection and posterior-mean explanation APIs.
 - Minimal scikit-learn example.
 - Pytest coverage for core behavior.
 - MIT OR Apache-2.0 dual license text.

@@ -117,6 +117,32 @@ The selected lambda is the candidate with the best validation score. Use this
 when you have a validation set and want a reproducible, data-driven fixed
 lambda for later explanations.
 
+## Bayesian-FPDE
+
+`FPDEEngine.select_bayesian_lambda` evaluates the same validation score as
+`select_lambda`, but converts the finite lambda grid into a posterior
+distribution. The default prior is `Beta(1, 1)`, which is uniform over the
+candidate grid.
+
+For each candidate:
+
+```text
+log_likelihood = n_eval_samples * validation_score / temperature
+log_prior      = (alpha - 1) * log(lambda_hyb)
+                 + (beta - 1) * log(1 - lambda_hyb)
+```
+
+The normalized posterior weights produce:
+
+- `posterior_mean_lambda`: the Bayesian model-averaged mixture weight.
+- `map_lambda`: the highest-posterior lambda candidate.
+- `credible_interval`: an equal-tail credible interval on the grid.
+- `posterior_rows`: candidate rows with validation metrics and posterior mass.
+
+`engine.explain_one_bayesian` and `engine.explain_batch_bayesian` use
+`posterior_mean_lambda`. Because Hyb-FPDE is linear in `lambda_hyb`, this is
+equivalent to the expected attribution vector under the lambda posterior.
+
 ## Interpreting Results
 
 An FPDE explanation contains:

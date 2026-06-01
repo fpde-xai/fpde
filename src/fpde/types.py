@@ -110,6 +110,39 @@ class HybFPDEValidationSelectionResult:
         )
 
 
+@dataclass(frozen=True)
+class BayesianFPDELambdaSelectionResult:
+    """Bayesian posterior over Hyb-FPDE lambda candidates.
+
+    The posterior is defined on the finite lambda grid supplied to
+    FPDEEngine.select_bayesian_lambda.  The posterior mean lambda can be used
+    as a Bayesian model-averaged Hyb-FPDE mixture weight.
+    """
+
+    posterior_mean_lambda: float
+    map_lambda: float
+    credible_interval: Tuple[float, float]
+    posterior_rows: Tuple[Dict[str, Any], ...]
+    prior_alpha: float
+    prior_beta: float
+    temperature: float
+    normalize: NormalizeMode
+    anchor_strategy: AnchorStrategy
+    eps: float
+    n_eval_samples: int
+
+    def sorted_rows(self) -> List[Dict[str, Any]]:
+        """Return posterior rows sorted from highest to lowest posterior mass."""
+        return sorted(
+            (dict(row) for row in self.posterior_rows),
+            key=lambda r: (
+                float(r.get("posterior_probability", 0.0)),
+                float(r.get("score", float("-inf"))),
+            ),
+            reverse=True,
+        )
+
+
 __all__ = [
     "Mode",
     "GridMode",
@@ -120,4 +153,5 @@ __all__ = [
     "FPDEContext",
     "HybFPDEGridSearchResult",
     "HybFPDEValidationSelectionResult",
+    "BayesianFPDELambdaSelectionResult",
 ]

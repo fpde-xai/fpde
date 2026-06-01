@@ -31,6 +31,7 @@ from .prototypes import (
 )
 from .types import (
     AnchorStrategy,
+    BayesianFPDELambdaSelectionResult,
     FPDEContext,
     GridMode,
     GridObjective,
@@ -80,6 +81,54 @@ def _validate_eps(eps: float) -> float:
     return value
 
 
+def _validate_positive_float(name: str, value: float) -> float:
+    out = float(value)
+    if not np.isfinite(out) or out <= 0.0:
+        raise ValueError(f"{name} must be positive")
+    return out
+
+
+def _validate_credible_mass(credible_mass: float) -> float:
+    value = float(credible_mass)
+    if not np.isfinite(value) or value <= 0.0 or value >= 1.0:
+        raise ValueError("credible_mass must be in (0, 1)")
+    return value
+
+
+def _stable_softmax(log_weights: np.ndarray) -> np.ndarray:
+    if log_weights.ndim != 1 or log_weights.size == 0:
+        raise ValueError("log_weights must be a non-empty 1D array")
+    finite = np.isfinite(log_weights)
+    if not np.any(finite):
+        raise RuntimeError("all Bayesian-FPDE lambda candidates failed")
+    shifted = np.full_like(log_weights, fill_value=float("-inf"), dtype=float)
+    max_log = float(np.max(log_weights[finite]))
+    shifted[finite] = log_weights[finite] - max_log
+    weights = np.exp(shifted)
+    total = float(np.sum(weights))
+    if total <= 0.0 or not np.isfinite(total):
+        raise RuntimeError("could not normalize Bayesian-FPDE posterior weights")
+    return weights / total
+
+
+def _weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
+    order = np.argsort(values)
+    sorted_values = values[order]
+    sorted_weights = weights[order]
+    cumulative = np.cumsum(sorted_weights)
+    idx = int(np.searchsorted(cumulative, float(q), side="left"))
+    idx = min(max(idx, 0), sorted_values.shape[0] - 1)
+    return float(sorted_values[idx])
+
+
+def _credible_interval(values: np.ndarray, weights: np.ndarray, credible_mass: float) -> Tuple[float, float]:
+    tail = 0.5 * (1.0 - credible_mass)
+    return (
+        _weighted_quantile(values, weights, tail),
+        _weighted_quantile(values, weights, 1.0 - tail),
+    )
+
+
 def _component_mode_for_lambda(lambda_hyb: float) -> Literal["both", "diff", "cos"]:
     if lambda_hyb == 1.0:
         return "diff"
@@ -102,6 +151,23 @@ def _mixed_hyb_component(comp: Dict[str, np.ndarray], lambda_hyb: float, diff_ke
     if lambda_hyb == 0.0:
         return comp[cos_key]
     return lambda_hyb * comp[diff_key] + (1.0 - lambda_hyb) * comp[cos_key]
+
+
+def _bayesian_detail_metadata(selection: BayesianFPDELambdaSelectionResult) -> Dict[str, Any]:
+    probabilities = np.asarray(
+        [float(row.get("posterior_probability", 0.0)) for row in selection.posterior_rows],
+        dtype=float,
+    )
+    positive = probabilities[probabilities > 0.0]
+    entropy = float(-np.sum(positive * np.log(positive))) if positive.size else 0.0
+    return {
+        "lambda_source": "bayesian_posterior_mean",
+        "posterior_mean_lambda": float(selection.posterior_mean_lambda),
+        "map_lambda": float(selection.map_lambda),
+        "credible_interval": tuple(float(v) for v in selection.credible_interval),
+        "posterior_entropy": entropy,
+        "effective_candidates": float(np.exp(entropy)),
+    }
 
 
 def _validation_row_base(
@@ -470,6 +536,70 @@ class FPDEEngine:
             anchor_strategy=anchor_strategy,
             include_details=False,
             eps=eps,
+            model=model,
+        )
+        return attr
+
+    @staticmethod
+    def _check_bayesian_selection(selection: BayesianFPDELambdaSelectionResult) -> BayesianFPDELambdaSelectionResult:
+        if not isinstance(selection, BayesianFPDELambdaSelectionResult):
+            raise TypeError("selection must be a BayesianFPDELambdaSelectionResult")
+        return selection
+
+    def explain_one_bayesian(
+        self,
+        x: np.ndarray | Sequence[float],
+        selection: BayesianFPDELambdaSelectionResult,
+        *,
+        model: Optional[Any] = None,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Explain one sample using the Bayesian posterior mean lambda."""
+        x_arr = self._check_x(x)
+        attr, details = self.explain_batch_bayesian(
+            x_arr.reshape(1, -1),
+            selection,
+            include_details=True,
+            model=model,
+        )
+        return attr[0], details[0]
+
+    def explain_batch_bayesian(
+        self,
+        X: np.ndarray | Sequence[Sequence[float]],
+        selection: BayesianFPDELambdaSelectionResult,
+        *,
+        include_details: bool = True,
+        model: Optional[Any] = None,
+    ) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+        """Explain many samples using the Bayesian posterior mean lambda."""
+        selection = self._check_bayesian_selection(selection)
+        attr, details = self.explain_batch(
+            X,
+            lambda_hyb=selection.posterior_mean_lambda,
+            normalize=selection.normalize,
+            anchor_strategy=selection.anchor_strategy,
+            include_details=include_details,
+            eps=selection.eps,
+            model=model,
+        )
+        if include_details:
+            metadata = _bayesian_detail_metadata(selection)
+            for row in details:
+                row.update(metadata)
+        return attr, details
+
+    def explain_matrix_bayesian(
+        self,
+        X: np.ndarray | Sequence[Sequence[float]],
+        selection: BayesianFPDELambdaSelectionResult,
+        *,
+        model: Optional[Any] = None,
+    ) -> np.ndarray:
+        """Return only the Bayesian-FPDE attribution matrix."""
+        attr, _ = self.explain_batch_bayesian(
+            X,
+            selection,
+            include_details=False,
             model=model,
         )
         return attr
@@ -859,6 +989,103 @@ class FPDEEngine:
             best_config=best_config,
             rows=tuple(rows),
             n_eval_samples=int(X_val_arr.shape[0]),
+        )
+
+    def select_bayesian_lambda(
+        self,
+        X_val: np.ndarray | Sequence[Sequence[float]],
+        *,
+        lambda_hyb_grid: Sequence[float] = _default_lambda_hyb_grid(0.1),
+        fractions: Sequence[float] = (0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0),
+        normalize: NormalizeMode = "l1",
+        anchor_strategy: AnchorStrategy = "mean",
+        eps: float = 1e-12,
+        max_working_bytes: int = 256 * 1024 * 1024,
+        alpha: float = 1.0,
+        beta: float = 1.0,
+        temperature: float = 1.0,
+        credible_mass: float = 0.95,
+        model: Optional[Any] = None,
+    ) -> BayesianFPDELambdaSelectionResult:
+        """Build a Bayesian posterior over validation-scored lambda_hyb candidates."""
+        alpha_value = _validate_positive_float("alpha", alpha)
+        beta_value = _validate_positive_float("beta", beta)
+        temperature_value = _validate_positive_float("temperature", temperature)
+        credible_mass_value = _validate_credible_mass(credible_mass)
+
+        lambdas = parse_float_grid(lambda_hyb_grid)
+        for lam in lambdas:
+            if lam < 0.0 or lam > 1.0:
+                raise ValueError("lambda_hyb_grid values must be in [0, 1]")
+        unique_lambdas = tuple(dict.fromkeys(float(lam) for lam in lambdas))
+
+        validation = self.select_lambda(
+            X_val,
+            lambda_hyb_grid=unique_lambdas,
+            fractions=fractions,
+            normalize=normalize,
+            anchor_strategy=anchor_strategy,
+            eps=eps,
+            max_working_bytes=max_working_bytes,
+            model=model,
+        )
+
+        lambda_values = np.asarray([float(row["lambda_hyb"]) for row in validation.rows], dtype=float)
+        log_weights = np.full(lambda_values.shape, fill_value=float("-inf"), dtype=float)
+        clip_eps = np.finfo(float).eps
+
+        for i, row in enumerate(validation.rows):
+            if row.get("status") != "ok":
+                continue
+            score = float(row["score"])
+            if not np.isfinite(score):
+                continue
+            lam = float(row["lambda_hyb"])
+            clipped_lam = float(np.clip(lam, clip_eps, 1.0 - clip_eps))
+            clipped_one_minus = float(np.clip(1.0 - lam, clip_eps, 1.0 - clip_eps))
+            log_likelihood = validation.n_eval_samples * score / temperature_value
+            log_prior = (alpha_value - 1.0) * np.log(clipped_lam)
+            log_prior += (beta_value - 1.0) * np.log(clipped_one_minus)
+            log_weights[i] = float(log_likelihood + log_prior)
+
+        probabilities = _stable_softmax(log_weights)
+        posterior_mean = float(np.sum(probabilities * lambda_values))
+        map_idx = int(np.argmax(probabilities))
+        interval = _credible_interval(lambda_values, probabilities, credible_mass_value)
+
+        posterior_rows: List[Dict[str, Any]] = []
+        for i, row in enumerate(validation.rows):
+            out = dict(row)
+            out["candidate_id"] = int(i)
+            out["posterior_probability"] = float(probabilities[i])
+            if np.isfinite(log_weights[i]):
+                out["log_posterior_unnormalized"] = float(log_weights[i])
+                out["log_likelihood"] = float(validation.n_eval_samples * float(row["score"]) / temperature_value)
+                lam = float(row["lambda_hyb"])
+                clipped_lam = float(np.clip(lam, clip_eps, 1.0 - clip_eps))
+                clipped_one_minus = float(np.clip(1.0 - lam, clip_eps, 1.0 - clip_eps))
+                out["log_prior"] = float(
+                    (alpha_value - 1.0) * np.log(clipped_lam)
+                    + (beta_value - 1.0) * np.log(clipped_one_minus)
+                )
+            else:
+                out["log_posterior_unnormalized"] = float("-inf")
+                out["log_likelihood"] = float("-inf")
+                out["log_prior"] = float("-inf")
+            posterior_rows.append(out)
+
+        return BayesianFPDELambdaSelectionResult(
+            posterior_mean_lambda=posterior_mean,
+            map_lambda=float(lambda_values[map_idx]),
+            credible_interval=interval,
+            posterior_rows=tuple(posterior_rows),
+            prior_alpha=alpha_value,
+            prior_beta=beta_value,
+            temperature=temperature_value,
+            normalize=normalize,
+            anchor_strategy=anchor_strategy,
+            eps=eps,
+            n_eval_samples=validation.n_eval_samples,
         )
 
 

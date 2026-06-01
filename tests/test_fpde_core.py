@@ -11,6 +11,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
 from fpde import (
+    BayesianFPDELambdaSelectionResult,
     FPDEEngine,
     class_mean_prototypes,
     explain_with_selected_prototypes,
@@ -36,8 +37,9 @@ def test_all_fpde_modules_are_importable():
 
 def test_public_module_import_paths_remain_available():
     expected = {
-        "fpde": ["FPDEEngine", "diff_fpde", "class_mean_prototypes", "top_two_labels"],
-        "fpde.core": ["FPDEEngine", "diff_fpde", "class_mean_prototypes", "top_two_labels"],
+        "fpde": ["FPDEEngine", "BayesianFPDELambdaSelectionResult", "diff_fpde", "class_mean_prototypes", "top_two_labels"],
+        "fpde.core": ["FPDEEngine", "BayesianFPDELambdaSelectionResult", "diff_fpde", "class_mean_prototypes", "top_two_labels"],
+        "fpde.types": ["BayesianFPDELambdaSelectionResult"],
         "fpde.explainers": ["diff_fpde", "cos_fpde", "explain_with_selected_prototypes"],
         "fpde.prototypes": ["class_mean_prototypes", "select_prototype_pair", "prepare_fpde_context"],
         "fpde.metrics": ["regularized_cosine", "top_two_labels", "perturbation_curves"],
@@ -445,6 +447,117 @@ def test_engine_validation_selection_deduplicates_lambdas_but_preserves_rows():
     assert selection.rows[1]["lambda_hyb"] == pytest.approx(0.5)
     assert selection.rows[2]["lambda_hyb"] == pytest.approx(0.5)
     assert selection.rows[1]["score"] == pytest.approx(selection.rows[2]["score"])
+
+
+def test_bayesian_lambda_selection_is_deterministic_and_normalized():
+    X_train, y_train, X_test, clf = _fit_classifier(n_classes=3)
+    engine = FPDEEngine.fit(X_train, y_train, model=clf)
+    kwargs = {
+        "lambda_hyb_grid": (0.0, 0.5, 1.0),
+        "fractions": (0.0, 0.5, 1.0),
+    }
+
+    selection_a = engine.select_bayesian_lambda(X_test[:6], **kwargs)
+    selection_b = engine.select_bayesian_lambda(X_test[:6], **kwargs)
+
+    assert isinstance(selection_a, BayesianFPDELambdaSelectionResult)
+    assert selection_a.posterior_mean_lambda == pytest.approx(selection_b.posterior_mean_lambda)
+    assert selection_a.map_lambda == pytest.approx(selection_b.map_lambda)
+    assert selection_a.credible_interval == pytest.approx(selection_b.credible_interval)
+    probabilities = [row["posterior_probability"] for row in selection_a.posterior_rows]
+    assert sum(probabilities) == pytest.approx(1.0)
+    assert 0.0 <= selection_a.posterior_mean_lambda <= 1.0
+    assert 0.0 <= selection_a.credible_interval[0] <= selection_a.credible_interval[1] <= 1.0
+
+
+def test_bayesian_lambda_uniform_prior_map_matches_best_validation_score():
+    X_train, y_train, X_test, clf = _fit_classifier(n_classes=3)
+    engine = FPDEEngine.fit(X_train, y_train, model=clf)
+
+    selection = engine.select_bayesian_lambda(
+        X_test[:6],
+        lambda_hyb_grid=(0.0, 0.5, 1.0),
+        fractions=(0.0, 0.5, 1.0),
+        alpha=1.0,
+        beta=1.0,
+    )
+
+    best_score = max(row["score"] for row in selection.posterior_rows)
+    best_lambdas = {
+        row["lambda_hyb"]
+        for row in selection.posterior_rows
+        if row["score"] == pytest.approx(best_score)
+    }
+    assert selection.map_lambda in best_lambdas
+
+
+def test_bayesian_lambda_selection_deduplicates_grid_values():
+    X_train, y_train, X_test, clf = _fit_classifier(n_classes=3)
+    engine = FPDEEngine.fit(X_train, y_train, model=clf)
+    kwargs = {"fractions": (0.0, 0.5, 1.0)}
+
+    unique = engine.select_bayesian_lambda(X_test[:6], lambda_hyb_grid=(0.0, 0.5, 1.0), **kwargs)
+    duplicated = engine.select_bayesian_lambda(X_test[:6], lambda_hyb_grid=(0.0, 0.5, 0.5, 1.0), **kwargs)
+
+    assert len(duplicated.posterior_rows) == 3
+    assert [row["lambda_hyb"] for row in duplicated.posterior_rows] == pytest.approx([0.0, 0.5, 1.0])
+    assert duplicated.posterior_mean_lambda == pytest.approx(unique.posterior_mean_lambda)
+    assert [row["posterior_probability"] for row in duplicated.posterior_rows] == pytest.approx(
+        [row["posterior_probability"] for row in unique.posterior_rows]
+    )
+
+
+def test_bayesian_explanations_match_posterior_mean_lambda_api():
+    X_train, y_train, X_test, clf = _fit_classifier(n_classes=3)
+    engine = FPDEEngine.fit(X_train, y_train, model=clf)
+    selection = engine.select_bayesian_lambda(
+        X_test[:6],
+        lambda_hyb_grid=(0.0, 0.5, 1.0),
+        fractions=(0.0, 0.5, 1.0),
+    )
+
+    bayes_one, bayes_detail = engine.explain_one_bayesian(X_test[0], selection)
+    fixed_one, fixed_detail = engine.explain_one(
+        X_test[0],
+        lambda_hyb=selection.posterior_mean_lambda,
+        normalize=selection.normalize,
+        anchor_strategy=selection.anchor_strategy,
+        eps=selection.eps,
+    )
+    np.testing.assert_allclose(bayes_one, fixed_one)
+    assert bayes_detail["evidence"] == pytest.approx(fixed_detail["evidence"])
+    assert bayes_detail["lambda_source"] == "bayesian_posterior_mean"
+    assert bayes_detail["posterior_mean_lambda"] == pytest.approx(selection.posterior_mean_lambda)
+
+    bayes_batch, bayes_details = engine.explain_batch_bayesian(X_test[:4], selection)
+    fixed_batch, _ = engine.explain_batch(
+        X_test[:4],
+        lambda_hyb=selection.posterior_mean_lambda,
+        normalize=selection.normalize,
+        anchor_strategy=selection.anchor_strategy,
+        eps=selection.eps,
+    )
+    np.testing.assert_allclose(bayes_batch, fixed_batch)
+    assert all(detail["map_lambda"] == pytest.approx(selection.map_lambda) for detail in bayes_details)
+    np.testing.assert_allclose(engine.explain_matrix_bayesian(X_test[:4], selection), bayes_batch)
+
+
+def test_bayesian_lambda_selection_validates_hyperparameters():
+    X_train, y_train, X_test, clf = _fit_classifier(n_classes=3)
+    engine = FPDEEngine.fit(X_train, y_train, model=clf)
+    kwargs = {
+        "lambda_hyb_grid": (0.0, 0.5, 1.0),
+        "fractions": (0.0, 0.5, 1.0),
+    }
+
+    with pytest.raises(ValueError, match="alpha must be positive"):
+        engine.select_bayesian_lambda(X_test[:4], alpha=0.0, **kwargs)
+    with pytest.raises(ValueError, match="beta must be positive"):
+        engine.select_bayesian_lambda(X_test[:4], beta=0.0, **kwargs)
+    with pytest.raises(ValueError, match="temperature must be positive"):
+        engine.select_bayesian_lambda(X_test[:4], temperature=0.0, **kwargs)
+    with pytest.raises(ValueError, match="credible_mass must be in"):
+        engine.select_bayesian_lambda(X_test[:4], credible_mass=1.0, **kwargs)
 
 
 def test_perturbation_curves_reuses_endpoint_samples():

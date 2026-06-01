@@ -20,6 +20,7 @@ probabilities.
 - Explain batches while reusing fitted prototype state.
 - Search Diff, Cos, and Hyb-FPDE candidate settings.
 - Select `lambda_hyb` with held-out deletion and insertion validation.
+- Build a Bayesian posterior over Hyb-FPDE `lambda_hyb` candidates.
 - Compute deletion and insertion perturbation curves for an attribution vector.
 
 ## Install FPDE
@@ -77,6 +78,20 @@ print(details["target_label"], details["rival_label"], details["evidence"])
 
 Positive attribution values support the target class relative to the rival
 class. Negative values support the rival class relative to the target class.
+
+To select a Hyb-FPDE mixture weight with Bayesian-FPDE, use held-out samples to
+build a posterior over lambda candidates, then explain with the posterior mean:
+
+```python
+selection = engine.select_bayesian_lambda(
+    X_test[:16],
+    lambda_hyb_grid=(0.0, 0.25, 0.5, 0.75, 1.0),
+)
+attributions, details = engine.explain_one_bayesian(X_test[0], selection)
+
+print(selection.posterior_mean_lambda, selection.map_lambda)
+print(selection.credible_interval)
+```
 
 ## Run The Example
 

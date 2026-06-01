@@ -11,7 +11,8 @@ This page documents the public API exported by `fpde` and `fpde.core`.
 ## Engine API
 
 Use `FPDEEngine` for repeated explanations, batch explanations, Hyb-FPDE, grid
-search, and validation-based lambda selection.
+search, validation-based lambda selection, and Bayesian-FPDE lambda posterior
+selection.
 
 ### `FPDEEngine.fit`
 
@@ -148,6 +149,75 @@ Selects `lambda_hyb` by held-out deletion and insertion validation.
 
 Returns a `HybFPDEValidationSelectionResult` with `best_lambda`,
 `best_config`, `rows`, and `n_eval_samples`.
+
+### `engine.select_bayesian_lambda`
+
+```python
+engine.select_bayesian_lambda(
+    X_val,
+    *,
+    lambda_hyb_grid=...,
+    fractions=(0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0),
+    normalize="l1",
+    anchor_strategy="mean",
+    eps=1e-12,
+    max_working_bytes=268435456,
+    alpha=1.0,
+    beta=1.0,
+    temperature=1.0,
+    credible_mass=0.95,
+    model=None,
+)
+```
+
+Builds a Bayesian posterior over unique `lambda_hyb` candidates using the same
+held-out deletion and insertion validation score as `select_lambda`.
+
+| Parameter | Description |
+| --- | --- |
+| `alpha` | Positive alpha parameter for the Beta prior on `lambda_hyb`. |
+| `beta` | Positive beta parameter for the Beta prior on `lambda_hyb`. |
+| `temperature` | Positive likelihood temperature. Smaller values make the posterior sharper. |
+| `credible_mass` | Credible interval mass in `(0, 1)`. |
+
+Returns a `BayesianFPDELambdaSelectionResult`.
+
+### `engine.explain_one_bayesian`
+
+```python
+engine.explain_one_bayesian(x, selection, *, model=None)
+```
+
+Explains one sample using `selection.posterior_mean_lambda`, where `selection`
+is a `BayesianFPDELambdaSelectionResult`.
+
+Returns `(attributions, details)`. The `details` dictionary includes the usual
+fixed-lambda fields plus `lambda_source`, `posterior_mean_lambda`,
+`map_lambda`, `credible_interval`, `posterior_entropy`, and
+`effective_candidates`.
+
+### `engine.explain_batch_bayesian`
+
+```python
+engine.explain_batch_bayesian(
+    X,
+    selection,
+    *,
+    include_details=True,
+    model=None,
+)
+```
+
+Explains many samples with the Bayesian posterior mean lambda. Returns
+`(attribution_matrix, details)`.
+
+### `engine.explain_matrix_bayesian`
+
+```python
+engine.explain_matrix_bayesian(X, selection, *, model=None)
+```
+
+Returns only the Bayesian-FPDE attribution matrix.
 
 ## Prototype Helpers
 
@@ -349,6 +419,15 @@ Contains `best_config`, `best_score`, `rows`, `objective`, `n_candidates`, and
 
 Contains `best_lambda`, `best_config`, `rows`, and `n_eval_samples`. Use
 `sorted_rows()` to inspect lambda candidates from best to worst.
+
+### `BayesianFPDELambdaSelectionResult`
+
+Contains `posterior_mean_lambda`, `map_lambda`, `credible_interval`,
+`posterior_rows`, `prior_alpha`, `prior_beta`, `temperature`, `normalize`,
+`anchor_strategy`, `eps`, and `n_eval_samples`.
+
+Use `sorted_rows()` to inspect lambda candidates from highest to lowest
+posterior probability.
 
 ## Common Errors
 
