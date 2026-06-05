@@ -13,7 +13,15 @@ Initial open-source package layout for FPDE.
   `FPDEEngine`.
 - Hyb-FPDE grid search and validation-based lambda selection through
   `FPDEEngine`.
-- Bayesian-FPDE lambda posterior selection and posterior-mean explanation APIs.
+- Experimental Bayesian-FPDE lambda posterior selection and posterior-mean
+  explanation APIs. This scope is limited to uncertainty over `lambda_hyb`
+  candidates, not prototype posterior sampling or black-box model uncertainty.
+- Optional plotting helpers for attribution bars, SHAP-style waterfalls and
+  summaries, attribution heatmaps, AIME-style similarity distributions, and
+  perturbation curves.
+- Attribution bar plots can show display-only uncertainty ranges, including
+  Bayesian-FPDE ranges induced by the `lambda_hyb` credible interval.
+- Runnable Bayesian-FPDE notebook demonstrating lambda posterior selection.
 - Minimal scikit-learn example.
 - Pytest coverage for core behavior.
 - MIT OR Apache-2.0 dual license text.
@@ -24,3 +32,5 @@ Initial open-source package layout for FPDE.
 
 - The repository focuses on the core package, examples, and tests.
 - The package currently provides class-mean prototypes.
+- Bayesian-FPDE currently models uncertainty over `lambda_hyb` candidates only;
+  it does not provide feature-level credible intervals from sampled prototypes.

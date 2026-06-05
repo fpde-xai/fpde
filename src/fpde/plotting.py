@@ -63,6 +63,15 @@ def _normalized(values: np.ndarray) -> np.ndarray:
     return values / denom
 
 
+def _interval_vector(name: str, values: Optional[np.ndarray | Sequence[float]], n_features: int) -> Optional[np.ndarray]:
+    if values is None:
+        return None
+    arr = _as_1d_float(name, values).astype(float, copy=False)
+    if arr.shape[0] != n_features:
+        raise ValueError(f"{name} length must match attributions: {arr.shape[0]} vs {n_features}")
+    return arr
+
+
 def _top_feature_indices(values: np.ndarray, top_k: Optional[int]) -> np.ndarray:
     if values.ndim == 1:
         scores = np.abs(values)
@@ -88,6 +97,10 @@ def plot_attributions(
     sort: bool = True,
     ax: Optional[Any] = None,
     title: Optional[str] = None,
+    interval_low: Optional[np.ndarray | Sequence[float]] = None,
+    interval_high: Optional[np.ndarray | Sequence[float]] = None,
+    interval_label: str = "Bayesian lambda range",
+    interval_color: str = "#111827",
     positive_color: str = _POSITIVE_COLOR,
     negative_color: str = _NEGATIVE_COLOR,
 ) -> Any:
@@ -111,6 +124,12 @@ def plot_attributions(
         Existing matplotlib Axes. If omitted, a new figure and axes are created.
     title:
         Optional axes title.
+    interval_low, interval_high:
+        Optional lower and upper values for each attribution. When supplied,
+        the selected features are drawn with horizontal error bars. This is
+        useful for showing the Bayesian-FPDE lambda credible range without
+        changing the plotted posterior-mean attribution values. These bounds
+        are display-only and must be on the same scale as ``attributions``.
 
     Returns
     -------
@@ -119,6 +138,16 @@ def plot_attributions(
     """
     values = _attribution_vector(attributions)
     labels = _feature_labels(feature_names, values.shape[0])
+    low = _interval_vector("interval_low", interval_low, values.shape[0])
+    high = _interval_vector("interval_high", interval_high, values.shape[0])
+    if (low is None) != (high is None):
+        raise ValueError("interval_low and interval_high must be provided together")
+    if normalize and low is not None:
+        raise ValueError("interval bounds are not supported with normalize=True")
+    if low is not None and high is not None:
+        invalid = low > high
+        if bool(np.any(invalid)):
+            raise ValueError("interval_low values must be less than or equal to interval_high values")
     display_values = _normalized(values) if normalize else values.copy()
 
     if top_k is not None:
@@ -139,11 +168,32 @@ def plot_attributions(
     ax = _axes(ax, figsize=(7.0, max(2.5, 0.32 * selected.shape[0] + 1.2)))
     y = np.arange(selected.shape[0])
     ax.barh(y, selected_values, color=colors)
+    if low is not None and high is not None:
+        selected_low = low[selected]
+        selected_high = high[selected]
+        xerr = np.vstack(
+            [
+                np.maximum(0.0, selected_values - selected_low),
+                np.maximum(0.0, selected_high - selected_values),
+            ]
+        )
+        ax.errorbar(
+            selected_values,
+            y,
+            xerr=xerr,
+            fmt="none",
+            ecolor=interval_color,
+            elinewidth=1.2,
+            capsize=3,
+            label=interval_label,
+        )
     ax.axvline(0.0, color="#111827", linewidth=0.8)
     ax.set_yticks(y)
     ax.set_yticklabels([str(label) for label in selected_labels])
     ax.invert_yaxis()
     ax.set_xlabel("L1-normalized attribution" if normalize else "Attribution")
+    if low is not None and high is not None:
+        ax.legend()
     if title is not None:
         ax.set_title(title)
     return ax

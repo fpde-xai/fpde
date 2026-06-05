@@ -124,6 +124,11 @@ lambda for later explanations.
 distribution. The default prior is `Beta(1, 1)`, which is uniform over the
 candidate grid.
 
+This experimental v0.1.0 Bayesian-FPDE layer is intentionally narrow:
+uncertainty is over `lambda_hyb` only. It does not place a posterior over
+class prototypes, does not sample prototype means, and does not model
+uncertainty in the black-box classifier.
+
 For each candidate:
 
 ```text
@@ -142,6 +147,9 @@ The normalized posterior weights produce:
 `engine.explain_one_bayesian` and `engine.explain_batch_bayesian` use
 `posterior_mean_lambda`. Because Hyb-FPDE is linear in `lambda_hyb`, this is
 equivalent to the expected attribution vector under the lambda posterior.
+The returned attribution vector is therefore an expected Hyb-FPDE attribution
+under the lambda posterior, not a per-feature credible interval from sampled
+prototypes.
 
 ## Interpreting Results
 
@@ -167,3 +175,5 @@ scale.
 - Record `lambda_hyb`, `normalize`, `anchor_strategy`, `eps`, and baseline
   choices when reporting results.
 - Treat FPDE as a local contrast explanation: the rival class matters.
+- Treat Bayesian-FPDE intervals as intervals over `lambda_hyb` candidates, not
+  as feature-level uncertainty intervals.

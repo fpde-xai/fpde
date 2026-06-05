@@ -11,8 +11,8 @@ This page documents the public API exported by `fpde` and `fpde.core`.
 ## Engine API
 
 Use `FPDEEngine` for repeated explanations, batch explanations, Hyb-FPDE, grid
-search, validation-based lambda selection, and Bayesian-FPDE lambda posterior
-selection.
+search, validation-based lambda selection, and experimental Bayesian-FPDE
+lambda posterior selection.
 
 ### `FPDEEngine.fit`
 
@@ -173,6 +173,10 @@ engine.select_bayesian_lambda(
 Builds a Bayesian posterior over unique `lambda_hyb` candidates using the same
 held-out deletion and insertion validation score as `select_lambda`.
 
+This API models uncertainty over the finite `lambda_hyb` grid only. It does
+not implement prototype posterior sampling, feature-level credible intervals,
+or black-box model uncertainty.
+
 | Parameter | Description |
 | --- | --- |
 | `alpha` | Positive alpha parameter for the Beta prior on `lambda_hyb`. |
@@ -190,6 +194,10 @@ engine.explain_one_bayesian(x, selection, *, model=None)
 
 Explains one sample using `selection.posterior_mean_lambda`, where `selection`
 is a `BayesianFPDELambdaSelectionResult`.
+
+Because the posterior is over `lambda_hyb`, returned attributions are computed
+with the posterior mean lambda. They are not sampled-prototype attribution
+summaries.
 
 Returns `(attributions, details)`. The `details` dictionary includes the usual
 fixed-lambda fields plus `lambda_source`, `posterior_mean_lambda`,
@@ -411,12 +419,21 @@ plot_attributions(
     sort=True,
     ax=None,
     title=None,
+    interval_low=None,
+    interval_high=None,
+    interval_label="Bayesian lambda range",
 )
 ```
 
 Plots a signed horizontal bar chart for a 1D attribution vector or an
 `FPDEExplanation`. Positive values support the target class; negative values
 support the rival class.
+
+Pass `interval_low` and `interval_high` to draw horizontal error bars for each
+feature. For Bayesian-FPDE, compute those bounds from the attribution vectors
+at the lower and upper `selection.credible_interval` lambda values. The range
+is display-only and represents uncertainty over `lambda_hyb`, not sampled
+prototype uncertainty.
 
 ### `plot_attribution_waterfall`
 
@@ -734,6 +751,9 @@ Contains `best_lambda`, `best_config`, `rows`, and `n_eval_samples`. Use
 Contains `posterior_mean_lambda`, `map_lambda`, `credible_interval`,
 `posterior_rows`, `prior_alpha`, `prior_beta`, `temperature`, `normalize`,
 `anchor_strategy`, `eps`, and `n_eval_samples`.
+
+The `credible_interval` field is an interval over lambda candidates, not a
+feature-attribution interval.
 
 Use `sorted_rows()` to inspect lambda candidates from highest to lowest
 posterior probability.

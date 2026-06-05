@@ -180,6 +180,21 @@ def test_plotting_helpers_accept_existing_axes_without_matplotlib():
     labels_call = next(args for name, args, _ in ax.calls if name == "set_yticklabels")
     assert labels_call[0] == ["b", "a"]
 
+    interval_ax = _FakeAxes()
+    assert (
+        plot_attributions(
+            [0.2, -0.6, 0.1],
+            feature_names=["a", "b", "c"],
+            top_k=2,
+            interval_low=[0.1, -0.8, 0.0],
+            interval_high=[0.3, -0.4, 0.2],
+            ax=interval_ax,
+        )
+        is interval_ax
+    )
+    assert [name for name, _, _ in interval_ax.calls].count("errorbar") == 1
+    assert [name for name, _, _ in interval_ax.calls].count("legend") == 1
+
     curves_ax = _FakeAxes()
     curves = {
         "fractions": [0.0, 0.5, 1.0],
@@ -239,6 +254,14 @@ def test_plotting_helpers_validate_inputs():
         plot_attributions([1.0, 2.0], feature_names=["only-one"], ax=_FakeAxes())
     with pytest.raises(ValueError, match="top_k"):
         plot_attributions([1.0, 2.0], top_k=0, ax=_FakeAxes())
+    with pytest.raises(ValueError, match="provided together"):
+        plot_attributions([1.0, 2.0], interval_low=[0.5, 1.5], ax=_FakeAxes())
+    with pytest.raises(ValueError, match="interval_low length"):
+        plot_attributions([1.0, 2.0], interval_low=[0.5], interval_high=[1.5], ax=_FakeAxes())
+    with pytest.raises(ValueError, match="less than or equal"):
+        plot_attributions([1.0, 2.0], interval_low=[1.5, 1.0], interval_high=[1.0, 3.0], ax=_FakeAxes())
+    with pytest.raises(ValueError, match="normalize=True"):
+        plot_attributions([1.0, 2.0], normalize=True, interval_low=[0.5, 1.5], interval_high=[1.5, 2.5], ax=_FakeAxes())
     with pytest.raises(ValueError, match="shape is required"):
         plot_attribution_image([1.0, 2.0], ax=_FakeAxes())
     with pytest.raises(ValueError, match="missing required keys"):

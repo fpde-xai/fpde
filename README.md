@@ -20,7 +20,8 @@ probabilities.
 - Explain batches while reusing fitted prototype state.
 - Search Diff, Cos, and Hyb-FPDE candidate settings.
 - Select `lambda_hyb` with held-out deletion and insertion validation.
-- Build a Bayesian posterior over Hyb-FPDE `lambda_hyb` candidates.
+- Build an experimental Bayesian posterior over Hyb-FPDE `lambda_hyb`
+  candidates.
 - Compute deletion and insertion perturbation curves for an attribution vector.
 - Plot attribution bars, cumulative waterfalls and contribution summaries, attribution
   heatmaps, FPDE-native prototype similarity distributions, and perturbation
@@ -108,6 +109,10 @@ plot_attribution_waterfall(
 )
 ```
 
+For Bayesian-FPDE plots, `plot_attributions` also accepts `interval_low` and
+`interval_high` so you can show the attribution range induced by the
+`lambda_hyb` credible interval.
+
 For a local contribution view, use `plot_local_contributions`. This displays FPDE local
 attributions as a signed feature bar chart:
 
@@ -184,6 +189,10 @@ print(selection.posterior_mean_lambda, selection.map_lambda)
 print(selection.credible_interval)
 ```
 
+In v0.1.0, Bayesian-FPDE uncertainty is limited to the finite grid of
+`lambda_hyb` candidates. It does not sample class prototypes, estimate
+feature-level prototype uncertainty, or model black-box classifier uncertainty.
+
 ## Run The Example
 
 ```bash
@@ -193,6 +202,9 @@ python examples/minimal_fpde_example.py
 The script prints the predicted class and the largest positive and negative
 feature contributions for one sample from the breast cancer dataset bundled
 with scikit-learn.
+
+For the experimental Bayesian-FPDE lambda posterior workflow, see
+`examples/bayesian_fpde_example.ipynb`.
 
 ## Documentation
 
