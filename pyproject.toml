@@ -38,6 +38,12 @@ dev = [
 plot = [
   "matplotlib"
 ]
+cuda12 = [
+  "cupy-cuda12x"
+]
+cuda13 = [
+  "cupy-cuda13x"
+]
 gpu = [
   "cupy-cuda13x"
 ]

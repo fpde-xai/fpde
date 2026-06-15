@@ -96,6 +96,28 @@ print(explanation.feature_importance)
 If `rival_label=None`, Dynamic-FPDE chooses the closest non-target prototype
 after resampling prototypes to the sample length.
 
+## Optional CUDA Tensor Operations
+
+Dynamic-FPDE provides optional CuPy helpers for already-resampled tensors:
+
+```python
+from fpde.dynamic_cuda import dynamic_hyb_fpde_gpu
+
+attr, evidence, details = dynamic_hyb_fpde_gpu(
+    X_resampled_batch,        # shape (N, T, F), or one sample (T, F)
+    target_proto_resampled,   # shape (N, T, F) or broadcastable (T, F)
+    rival_proto_resampled,
+    lambda_hyb=0.5,
+)
+```
+
+For batched input, CUDA helpers return attributions with shape `(N, T, F)` and
+evidence with shape `(N,)`. Pass `return_numpy=False` to keep returned arrays on
+the GPU as CuPy arrays.
+
+Feature extraction and temporal resampling remain CPU-side. CUDA acceleration
+is intended for batched, already-resampled Dynamic-FPDE tensor operations.
+
 ## Temporal Deletion And Insertion
 
 `temporal_deletion_insertion_curves` evaluates frame rankings with
@@ -134,6 +156,7 @@ The returned `insertion_auc` key is retained as an alias for
   probabilities.
 - Attribution signs depend on the target/rival prototype pair.
 - v0.1 uses linear temporal resampling only.
+- CUDA helpers do not accelerate feature extraction or temporal resampling.
 - Inputs are frame-level feature matrices only.
 - Raw waveform direct explanation, DTW alignment, Delta-Dynamic-FPDE,
   AIME/SHAP/LIME comparisons, and recommender-specific logic are out of scope.

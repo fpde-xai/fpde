@@ -33,11 +33,11 @@ Fits reusable FPDE state from training data.
 Returns an `FPDEEngine`.
 
 When `device` resolves to CUDA, FPDE uses CuPy for vectorized attribution
-components and validation perturbation-array construction. The `fpde[gpu]`
-extra installs the CUDA 13 CuPy wheel; install a different CuPy package
-manually if your CUDA stack requires one. Model calls such as scikit-learn
-`predict_proba` remain on the model backend, so arrays are converted back to
-NumPy at that boundary.
+components and validation perturbation-array construction. Install
+`fpde[cuda12]` for CUDA 12.x or `fpde[cuda13]` for CUDA 13.x. The `fpde[gpu]`
+extra is a convenience alias that currently points to CUDA 13. Model calls
+such as scikit-learn `predict_proba` remain on the model backend, so arrays
+are converted back to NumPy at that boundary.
 
 ### `engine.explain_one`
 
@@ -368,6 +368,25 @@ the Dynamic-Diff endpoint, and `lambda_hyb=0.0` is the Dynamic-Cos endpoint.
 `normalize` may be `"l1"` or `"none"`.
 
 Returns `(Phi_hyb, E_hyb, details)`.
+
+### Dynamic-FPDE CUDA helpers
+
+```python
+from fpde.dynamic_cuda import (
+    dynamic_diff_fpde_gpu,
+    dynamic_cos_fpde_gpu,
+    dynamic_hyb_fpde_gpu,
+)
+```
+
+These optional CuPy helpers accept either one resampled tensor with shape
+`(T, F)` or a batch with shape `(N, T, F)`. For batched input, they return
+attributions with shape `(N, T, F)` and evidence with shape `(N,)`.
+
+Use `return_numpy=False` to keep CuPy arrays on device; by default results are
+converted back to NumPy/Python scalars. Feature extraction and
+`resample_time_series_linear` remain CPU-side. CUDA acceleration is intended
+for batched, already-resampled Dynamic-FPDE tensor operations.
 
 ### `dynamic_fpde_explain_one`
 

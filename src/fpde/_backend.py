@@ -27,8 +27,9 @@ def _load_cupy() -> Any:
         import cupy as cp  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ImportError(
-            "CuPy is required for device='cuda'. Install a CUDA-matched CuPy "
-            "package such as cupy-cuda13x, or use device='cpu'."
+            "CuPy is required for device='cuda'. Install `fpde[cuda12]`, "
+            "`fpde[cuda13]`, or a CUDA-matched CuPy package; otherwise use "
+            "device='cpu'."
         ) from exc
 
     try:

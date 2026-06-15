@@ -92,14 +92,18 @@ class. Negative values support the rival class relative to the target class.
 
 ### Optional NVIDIA GPU acceleration
 
-FPDE can use CuPy for the vectorized attribution and validation-array
-construction paths. The optional GPU extra installs the CUDA 13 CuPy wheel;
-if your CUDA stack needs a different CuPy package, install that package
-manually instead. Then request CUDA on the engine:
+FPDE can use CuPy for vectorized attribution and validation tensor operations.
+Install the CuPy wheel that matches your CUDA stack:
 
 ```bash
-pip install "fpde[gpu]"
+pip install "fpde[cuda12]"  # CUDA 12.x
+pip install "fpde[cuda13]"  # CUDA 13.x
 ```
+
+The `fpde[gpu]` extra is kept as a convenience alias and currently points to
+the CUDA 13 wheel.
+
+For fixed-length tabular FPDE, request CUDA on the engine:
 
 ```python
 engine = FPDEEngine.fit(X_train, y_train, model=model, device="cuda")
@@ -110,6 +114,22 @@ Use `device="auto"` to use CuPy when a CUDA device is available and otherwise
 fall back to CPU. Model calls such as scikit-learn `predict_proba` still run
 through the model's own backend; FPDE converts arrays back to NumPy at that
 boundary.
+
+Dynamic-FPDE also has explicit CUDA helpers for already-resampled tensors:
+
+```python
+from fpde.dynamic_cuda import dynamic_hyb_fpde_gpu
+
+attr, evidence, details = dynamic_hyb_fpde_gpu(
+    X_resampled_batch,        # shape (N, T, F), or one sample (T, F)
+    target_proto_resampled,   # shape (N, T, F) or broadcastable (T, F)
+    rival_proto_resampled,
+    lambda_hyb=0.5,
+)
+```
+
+Feature extraction and temporal resampling remain CPU-side. CUDA acceleration
+is intended for batched, already-resampled Dynamic-FPDE tensor operations.
 
 To visualize an explanation, install the optional plotting extra and pass
 feature names when available:

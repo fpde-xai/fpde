@@ -9,6 +9,7 @@ from .engine import *  # noqa: F401,F403
 from .utils import *  # noqa: F401,F403
 from .plotting import *  # noqa: F401,F403
 from .dynamic import *  # noqa: F401,F403
+from .dynamic_cuda import *  # noqa: F401,F403
 from ._batch import _full_topk_mask, _topk_masks_for_counts  # noqa: F401
 
 from .types import __all__ as _types_all
@@ -20,6 +21,7 @@ from .engine import __all__ as _engine_all
 from .utils import __all__ as _utils_all
 from .plotting import __all__ as _plotting_all
 from .dynamic import __all__ as _dynamic_all
+from .dynamic_cuda import __all__ as _dynamic_cuda_all
 
 __all__ = list(dict.fromkeys(
     [
@@ -32,5 +34,6 @@ __all__ = list(dict.fromkeys(
         *_utils_all,
         *_plotting_all,
         *_dynamic_all,
+        *_dynamic_cuda_all,
     ]
 ))
