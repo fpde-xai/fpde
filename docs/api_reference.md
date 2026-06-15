@@ -278,6 +278,183 @@ Precomputes reusable prototypes, anchors, baseline, and feature metadata.
 
 Returns an `FPDEContext`.
 
+## Dynamic-FPDE API
+
+Dynamic-FPDE explains frame-level time-series feature matrices with shape
+`(T, F)` and returns attribution matrices with the same shape. It is prototype
+evidence decomposition, not a causal explanation.
+
+### `prepare_dynamic_fpde_context`
+
+```python
+prepare_dynamic_fpde_context(
+    X_train,
+    y_train,
+    *,
+    prototype_length=128,
+    alignment="linear",
+    baseline="mean",
+)
+```
+
+Builds one class-mean temporal prototype per label from a sequence of
+variable-length `(T_i, F)` arrays. Each training sequence is linearly resampled
+to `prototype_length`.
+
+Returns a `DynamicFPDEContext` with prototypes shaped `(n_classes,
+prototype_length, n_features)`, labels, mean and zero anchors, and metadata.
+Only `alignment="linear"` is supported in v0.1.
+
+### `resample_time_series_linear`
+
+```python
+resample_time_series_linear(X, target_length)
+```
+
+Linearly resamples a finite 2D sequence matrix to `(target_length, F)`.
+Single-frame inputs are repeated.
+
+### `dynamic_diff_fpde`
+
+```python
+dynamic_diff_fpde(X, P_target, P_rival)
+```
+
+Computes:
+
+```text
+Phi_diff[t, f] = (X[t, f] - P_rival[t, f])**2
+               - (X[t, f] - P_target[t, f])**2
+```
+
+Returns `(Phi_diff, E_diff)`, where `E_diff = Phi_diff.sum()`.
+
+### `dynamic_cos_fpde`
+
+```python
+dynamic_cos_fpde(X, P_target, P_rival, *, anchor=None, eps=1e-12)
+```
+
+Computes a coordinate decomposition of the cosine contrast between
+`X - anchor`, `P_target - anchor`, and `P_rival - anchor`. Returns
+`(Phi_cos, E_cos)`.
+
+### `dynamic_hyb_fpde`
+
+```python
+dynamic_hyb_fpde(
+    X,
+    P_target,
+    P_rival,
+    *,
+    lambda_hyb=0.5,
+    normalize="l1",
+    anchor=None,
+    eps=1e-12,
+)
+```
+
+Mixes Dynamic-Diff and Dynamic-Cos attribution matrices. `lambda_hyb=1.0` is
+the Dynamic-Diff endpoint, and `lambda_hyb=0.0` is the Dynamic-Cos endpoint.
+`normalize` may be `"l1"` or `"none"`.
+
+Returns `(Phi_hyb, E_hyb, details)`.
+
+### `dynamic_fpde_explain_one`
+
+```python
+dynamic_fpde_explain_one(
+    X,
+    context,
+    *,
+    target_label,
+    rival_label=None,
+    mode="dynamic_hyb",
+    lambda_hyb=0.5,
+    normalize="l1",
+    anchor_strategy="mean",
+    eps=1e-12,
+)
+```
+
+Explains one sequence. If `rival_label` is omitted, the closest non-target
+prototype is selected after resampling prototypes to the sample length.
+
+Returns a `DynamicFPDEExplanation` with `attributions`, `time_importance`,
+`feature_importance`, evidence, target/rival labels, residual, and details.
+
+### `dynamic_fpde_explain_batch`
+
+```python
+dynamic_fpde_explain_batch(
+    X_list,
+    context,
+    *,
+    target_labels,
+    rival_labels=None,
+    mode="dynamic_hyb",
+    lambda_hyb=0.5,
+    normalize="l1",
+    anchor_strategy="mean",
+    eps=1e-12,
+)
+```
+
+Explains many variable-length sequences by calling
+`dynamic_fpde_explain_one` for each sample.
+
+### `temporal_deletion_insertion_curves`
+
+```python
+temporal_deletion_insertion_curves(
+    X,
+    explanation,
+    context,
+    *,
+    target_label,
+    rival_label,
+    steps=20,
+    baseline_strategy="mean",
+)
+```
+
+Ranks frames by signed `explanation.time_importance`, then computes
+prototype-driven deletion and insertion curves using Dynamic-Diff evidence.
+
+Returns deletion and insertion curves, AUC metrics, and `combined_score`.
+
+### `select_dynamic_lambda`
+
+```python
+select_dynamic_lambda(
+    X_val,
+    y_val,
+    context,
+    *,
+    lambda_grid=None,
+    mode="dynamic_hyb",
+    normalize="l1",
+    anchor_strategy="mean",
+    steps=20,
+)
+```
+
+Evaluates Dynamic-Hyb lambda candidates with temporal deletion/insertion
+metrics. The default lambda grid is `[0.0, 0.25, 0.5, 0.75, 1.0]`.
+
+Returns a dictionary with `best_lambda`, candidate `rows`, metric means, and
+the best row.
+
+### Dynamic Plotting Helpers
+
+```python
+plot_dynamic_time_importance(explanation, *, ax=None, title=None)
+plot_dynamic_attribution_heatmap(explanation, *, ax=None, title=None)
+```
+
+These optional helpers require matplotlib only when no existing axes object is
+provided.
+
 ## Explanation Functions
 
 Use these functions when you want direct control over prototypes and labels.
@@ -735,6 +912,18 @@ Result object returned by direct explanation functions.
 
 Reusable training-side state with prototypes, prototype labels, mean anchor,
 zero anchor, baseline, and feature count.
+
+### `DynamicFPDEContext`
+
+Reusable Dynamic-FPDE state with temporal prototypes, prototype labels,
+prototype length, feature count, mean anchor, zero anchor, alignment, and
+metadata.
+
+### `DynamicFPDEExplanation`
+
+Result object for one Dynamic-FPDE explanation. The `attributions` field has
+shape `(T, F)`, `time_importance` has shape `(T,)`, and
+`feature_importance` has shape `(F,)`.
 
 ### `HybFPDEGridSearchResult`
 

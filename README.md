@@ -22,6 +22,7 @@ probabilities.
 - Select `lambda_hyb` with held-out deletion and insertion validation.
 - Build an experimental Bayesian posterior over Hyb-FPDE `lambda_hyb`
   candidates.
+- Explain variable-length frame-level feature matrices with Dynamic-FPDE.
 - Compute deletion and insertion perturbation curves for an attribution vector.
 - Plot attribution bars, cumulative waterfalls and contribution summaries, attribution
   heatmaps, FPDE-native prototype similarity distributions, and perturbation
@@ -193,6 +194,33 @@ In v0.1.0, Bayesian-FPDE uncertainty is limited to the finite grid of
 `lambda_hyb` candidates. It does not sample class prototypes, estimate
 feature-level prototype uncertainty, or model black-box classifier uncertainty.
 
+## Dynamic-FPDE
+
+Dynamic-FPDE explains variable-length frame-level feature matrices with shape
+`(T, F)`, where `T` is the number of time frames and `F` is the number of
+frame-level features. It returns an attribution matrix with the same shape.
+Positive values support the target prototype over the rival prototype, and
+negative values support the rival prototype over the target prototype.
+
+```python
+from fpde import prepare_dynamic_fpde_context, dynamic_fpde_explain_one
+
+context = prepare_dynamic_fpde_context(X_train_sequences, y_train, prototype_length=128)
+explanation = dynamic_fpde_explain_one(
+    X_sample,
+    context,
+    target_label=target_label,
+    mode="dynamic_hyb",
+    lambda_hyb=0.5,
+)
+
+print(explanation.attributions.shape)
+print(explanation.time_importance.shape)
+```
+
+Dynamic-FPDE is prototype evidence decomposition, not a causal explanation. In
+v0.1, it supports linear temporal resampling for frame-level features only.
+
 ## Run The Example
 
 ```bash
@@ -209,6 +237,7 @@ For the experimental Bayesian-FPDE lambda posterior workflow, see
 ## Documentation
 
 - [Method overview](https://github.com/fpde-xai/fpde/blob/main/docs/method_overview.md): core FPDE concepts and variants.
+- [Dynamic-FPDE](https://github.com/fpde-xai/fpde/blob/main/docs/dynamic_fpde.md): frame-level time-series feature attribution.
 - [API reference](https://github.com/fpde-xai/fpde/blob/main/docs/api_reference.md): public functions, classes, parameters,
   and result objects.
 - [Reproducibility checklist](https://github.com/fpde-xai/fpde/blob/main/docs/reproducibility_checklist.md): what to record
