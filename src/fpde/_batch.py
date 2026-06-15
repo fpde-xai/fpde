@@ -11,6 +11,7 @@ from ._array import (
     _predict_proba_matrix,
     _rounded_feature_counts,
 )
+from ._backend import as_numpy_array, as_numpy_dict
 from .types import NormalizeMode
 
 
@@ -58,61 +59,66 @@ def _plan_lambda_grid_perturbation_chunks(
     return _PerturbationChunkPlan(axis="lambda", chunk_size=lambda_chunk_size)
 
 
-def _full_topk_mask(scores: np.ndarray, ks: np.ndarray) -> np.ndarray:
+def _truth(value: Any) -> bool:
+    return bool(value.item()) if hasattr(value, "item") else bool(value)
+
+
+def _full_topk_mask(scores: np.ndarray, ks: np.ndarray, *, array_namespace: Any = np) -> np.ndarray:
     """Return masks equivalent to ranking features by descending scores."""
+    xp = array_namespace
     n, d = scores.shape
-    order = np.argsort(-scores, axis=1)
-    ranks = np.empty_like(order, dtype=np.intp)
-    ranks[np.arange(n)[:, None], order] = np.arange(d, dtype=np.intp)[None, :]
+    order = xp.argsort(-scores, axis=1)
+    ranks = xp.empty_like(order, dtype=np.intp)
+    ranks[xp.arange(n)[:, None], order] = xp.arange(d, dtype=np.intp)[None, :]
     return ranks[:, None, :] < ks[None, :, None]
 
 
-def _topk_masks_for_counts(scores: np.ndarray, ks: np.ndarray) -> np.ndarray:
+def _topk_masks_for_counts(scores: np.ndarray, ks: np.ndarray, *, array_namespace: Any = np) -> np.ndarray:
     """Build top-k masks, avoiding full feature sorts when requested k is small."""
-    scores_arr = np.asarray(scores, dtype=float)
-    ks_arr = np.asarray(ks, dtype=np.intp)
+    xp = array_namespace
+    scores_arr = xp.asarray(scores, dtype=float)
+    ks_values = [int(k) for k in np.asarray(ks, dtype=np.intp).tolist()]
+    ks_arr = xp.asarray(ks_values, dtype=np.intp)
     if scores_arr.ndim != 2:
         raise ValueError(f"scores must be a 2D array, got shape={scores_arr.shape}")
     n, d = scores_arr.shape
     if ks_arr.ndim != 1:
         raise ValueError("ks must be a 1D array")
     if ks_arr.size == 0:
-        return np.zeros((n, 0, d), dtype=bool)
-    max_k = int(np.max(ks_arr))
+        return xp.zeros((n, 0, d), dtype=bool)
+    max_k = max(ks_values)
     if max_k <= 0:
-        return np.zeros((n, ks_arr.shape[0], d), dtype=bool)
+        return xp.zeros((n, ks_arr.shape[0], d), dtype=bool)
     if d <= 128 or max_k >= d or max_k * 2 >= d:
-        return _full_topk_mask(scores_arr, ks_arr)
+        return _full_topk_mask(scores_arr, ks_arr, array_namespace=xp)
 
-    mask = np.zeros((n, ks_arr.shape[0], d), dtype=bool)
-    candidate_idx = np.argpartition(scores_arr, kth=d - max_k, axis=1)[:, -max_k:]
-    candidate_scores = np.take_along_axis(scores_arr, candidate_idx, axis=1)
-    candidate_order = np.argsort(-candidate_scores, axis=1)
-    sorted_idx = np.take_along_axis(candidate_idx, candidate_order, axis=1)
-    sorted_scores = np.take_along_axis(candidate_scores, candidate_order, axis=1)
+    mask = xp.zeros((n, ks_arr.shape[0], d), dtype=bool)
+    candidate_idx = xp.argpartition(scores_arr, kth=d - max_k, axis=1)[:, -max_k:]
+    candidate_scores = xp.take_along_axis(scores_arr, candidate_idx, axis=1)
+    candidate_order = xp.argsort(-candidate_scores, axis=1)
+    sorted_idx = xp.take_along_axis(candidate_idx, candidate_order, axis=1)
+    sorted_scores = xp.take_along_axis(candidate_scores, candidate_order, axis=1)
 
-    tied_rows = np.zeros(n, dtype=bool)
-    for k in ks_arr:
-        k_int = int(k)
+    tied_rows = xp.zeros(n, dtype=bool)
+    for k_int in ks_values:
         if k_int <= 0:
             continue
         threshold = sorted_scores[:, k_int - 1]
-        greater = np.sum(scores_arr > threshold[:, None], axis=1)
-        equal = np.sum(scores_arr == threshold[:, None], axis=1)
+        greater = xp.sum(scores_arr > threshold[:, None], axis=1)
+        equal = xp.sum(scores_arr == threshold[:, None], axis=1)
         tied_rows |= (greater < k_int) & (k_int < greater + equal)
 
     fast_rows = ~tied_rows
-    if np.any(fast_rows):
+    if _truth(xp.any(fast_rows)):
         fast_out = mask[fast_rows]
         fast_sorted_idx = sorted_idx[fast_rows]
-        row = np.arange(fast_sorted_idx.shape[0])[:, None]
-        for pos, k in enumerate(ks_arr):
-            k_int = int(k)
+        row = xp.arange(fast_sorted_idx.shape[0])[:, None]
+        for pos, k_int in enumerate(ks_values):
             if k_int > 0:
                 fast_out[row, pos, fast_sorted_idx[:, :k_int]] = True
         mask[fast_rows] = fast_out
-    if np.any(tied_rows):
-        mask[tied_rows] = _full_topk_mask(scores_arr[tied_rows], ks_arr)
+    if _truth(xp.any(tied_rows)):
+        mask[tied_rows] = _full_topk_mask(scores_arr[tied_rows], ks_arr, array_namespace=xp)
     return mask
 
 
@@ -136,10 +142,12 @@ def _scale_attribution_batch(
     *,
     normalize: NormalizeMode,
     eps: float,
+    array_namespace: Any = np,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Vectorized counterpart of _scaled_explanation_parts for many rows."""
+    xp = array_namespace
     if normalize == "none":
-        scale = np.ones(attr.shape[0], dtype=float)
+        scale = xp.ones(attr.shape[0], dtype=float)
         return (
             attr.astype(float, copy=False),
             evidence.astype(float, copy=False),
@@ -150,20 +158,20 @@ def _scale_attribution_batch(
     if normalize != "l1":
         raise ValueError(f"unknown normalize={normalize!r}; expected 'none' or 'l1'")
 
-    scale = np.sum(np.abs(attr), axis=1).astype(float, copy=False)
-    ok = (scale > eps) & np.isfinite(scale)
+    scale = xp.sum(xp.abs(attr), axis=1).astype(float, copy=False)
+    ok = (scale > eps) & xp.isfinite(scale)
     out_attr = attr.astype(float, copy=False)
-    out_ev = np.zeros_like(evidence, dtype=float)
-    out_pos = np.zeros_like(positive_score, dtype=float)
-    out_neg = np.zeros_like(negative_score, dtype=float)
-    if np.any(ok):
+    out_ev = xp.zeros_like(evidence, dtype=float)
+    out_pos = xp.zeros_like(positive_score, dtype=float)
+    out_neg = xp.zeros_like(negative_score, dtype=float)
+    if _truth(xp.any(ok)):
         out_attr[ok] /= scale[ok, None]
         out_ev[ok] = evidence[ok] / scale[ok]
         out_pos[ok] = positive_score[ok] / scale[ok]
         out_neg[ok] = negative_score[ok] / scale[ok]
-    if np.any(~ok):
+    if _truth(xp.any(~ok)):
         out_attr[~ok] = 0.0
-    scale = np.where(ok, scale, 0.0)
+    scale = xp.where(ok, scale, 0.0)
     return out_attr, out_ev, out_pos, out_neg, scale
 
 
@@ -172,19 +180,21 @@ def _scale_attribution_array_batch(
     *,
     normalize: NormalizeMode,
     eps: float,
+    array_namespace: Any = np,
 ) -> np.ndarray:
     """Scale only attribution rows, skipping evidence/score outputs."""
+    xp = array_namespace
     if normalize == "none":
         return attr.astype(float, copy=False)
     if normalize != "l1":
         raise ValueError(f"unknown normalize={normalize!r}; expected 'none' or 'l1'")
 
-    scale = np.sum(np.abs(attr), axis=1).astype(float, copy=False)
-    ok = (scale > eps) & np.isfinite(scale)
+    scale = xp.sum(xp.abs(attr), axis=1).astype(float, copy=False)
+    ok = (scale > eps) & xp.isfinite(scale)
     out = attr.astype(float, copy=False)
-    if np.any(ok):
+    if _truth(xp.any(ok)):
         out[ok] /= scale[ok, None]
-    if np.any(~ok):
+    if _truth(xp.any(~ok)):
         out[~ok] = 0.0
     return out
 
@@ -200,12 +210,17 @@ def _hyb_components_for_prototype_indices_batch(
     eps: float,
     include_scores: bool = True,
     component_mode: Literal["both", "diff", "cos"] = "both",
+    array_namespace: Any = np,
 ) -> Dict[str, np.ndarray]:
     """Precompute normalized Diff/Cos components for many selected prototype pairs."""
+    xp = array_namespace
+    X = xp.asarray(X, dtype=float)
+    prototypes = xp.asarray(prototypes, dtype=float)
+    anchor = xp.asarray(anchor, dtype=float)
     if component_mode not in ("both", "diff", "cos"):
         raise ValueError("component_mode must be 'both', 'diff', or 'cos'")
-    pos_idx = np.asarray(pos_idx, dtype=np.intp)
-    neg_idx = np.asarray(neg_idx, dtype=np.intp)
+    pos_idx = xp.asarray(pos_idx, dtype=np.intp)
+    neg_idx = xp.asarray(neg_idx, dtype=np.intp)
     if pos_idx.shape != (X.shape[0],) or neg_idx.shape != (X.shape[0],):
         raise ValueError("prototype index arrays must have shape (n_samples,)")
 
@@ -217,14 +232,14 @@ def _hyb_components_for_prototype_indices_batch(
     if component_mode in ("both", "diff"):
         pos_sqdist = X - p_pos
         neg_sqdist = X - p_neg
-        np.square(pos_sqdist, out=pos_sqdist)
-        np.square(neg_sqdist, out=neg_sqdist)
+        xp.square(pos_sqdist, out=pos_sqdist)
+        xp.square(neg_sqdist, out=neg_sqdist)
         diff_attr_raw = neg_sqdist
         diff_attr_raw -= pos_sqdist
         if include_scores:
-            diff_pos_raw = -np.sum(pos_sqdist, axis=1)
-            diff_neg_raw = -np.sum(neg_sqdist, axis=1)
-            diff_ev_raw = np.sum(diff_attr_raw, axis=1)
+            diff_pos_raw = -xp.sum(pos_sqdist, axis=1)
+            diff_neg_raw = -xp.sum(neg_sqdist, axis=1)
+            diff_ev_raw = xp.sum(diff_attr_raw, axis=1)
             diff_attr, diff_ev, diff_pos, diff_neg, diff_scale = _scale_attribution_batch(
                 diff_attr_raw,
                 diff_ev_raw,
@@ -232,11 +247,12 @@ def _hyb_components_for_prototype_indices_batch(
                 diff_neg_raw,
                 normalize=normalize,
                 eps=eps,
+                array_namespace=xp,
             )
             out.update(
                 {
                     "diff_attr": diff_attr,
-                    "diff_attr_sum": diff_ev if normalize == "none" else np.sum(diff_attr, axis=1),
+                    "diff_attr_sum": diff_ev if normalize == "none" else xp.sum(diff_attr, axis=1),
                     "diff_ev": diff_ev,
                     "diff_pos": diff_pos,
                     "diff_neg": diff_neg,
@@ -245,28 +261,33 @@ def _hyb_components_for_prototype_indices_batch(
                 }
             )
         else:
-            out["diff_attr"] = _scale_attribution_array_batch(diff_attr_raw, normalize=normalize, eps=eps)
+            out["diff_attr"] = _scale_attribution_array_batch(
+                diff_attr_raw,
+                normalize=normalize,
+                eps=eps,
+                array_namespace=xp,
+            )
 
     if component_mode in ("both", "cos"):
         z = X - anchor[None, :]
         q_pos = p_pos - anchor[None, :]
         q_neg = p_neg - anchor[None, :]
 
-        n_z = np.sqrt(np.sum(z * z, axis=1) + eps * eps)
-        n_pos = np.sqrt(np.sum(q_pos * q_pos, axis=1) + eps * eps)
-        n_neg = np.sqrt(np.sum(q_neg * q_neg, axis=1) + eps * eps)
+        n_z = xp.sqrt(xp.sum(z * z, axis=1) + eps * eps)
+        n_pos = xp.sqrt(xp.sum(q_pos * q_pos, axis=1) + eps * eps)
+        n_neg = xp.sqrt(xp.sum(q_neg * q_neg, axis=1) + eps * eps)
 
         pos_by_feature = z * q_pos
         pos_by_feature /= (n_z * n_pos)[:, None]
         neg_by_feature = z * q_neg
         neg_by_feature /= (n_z * n_neg)[:, None]
         if include_scores:
-            cos_pos_raw = np.sum(pos_by_feature, axis=1)
-            cos_neg_raw = np.sum(neg_by_feature, axis=1)
+            cos_pos_raw = xp.sum(pos_by_feature, axis=1)
+            cos_neg_raw = xp.sum(neg_by_feature, axis=1)
         cos_attr_raw = pos_by_feature
         cos_attr_raw -= neg_by_feature
         if include_scores:
-            cos_ev_raw = np.sum(cos_attr_raw, axis=1)
+            cos_ev_raw = xp.sum(cos_attr_raw, axis=1)
             cos_attr, cos_ev, cos_pos, cos_neg, cos_scale = _scale_attribution_batch(
                 cos_attr_raw,
                 cos_ev_raw,
@@ -274,11 +295,12 @@ def _hyb_components_for_prototype_indices_batch(
                 cos_neg_raw,
                 normalize=normalize,
                 eps=eps,
+                array_namespace=xp,
             )
             out.update(
                 {
                     "cos_attr": cos_attr,
-                    "cos_attr_sum": cos_ev if normalize == "none" else np.sum(cos_attr, axis=1),
+                    "cos_attr_sum": cos_ev if normalize == "none" else xp.sum(cos_attr, axis=1),
                     "cos_ev": cos_ev,
                     "cos_pos": cos_pos,
                     "cos_neg": cos_neg,
@@ -287,8 +309,13 @@ def _hyb_components_for_prototype_indices_batch(
                 }
             )
         else:
-            out["cos_attr"] = _scale_attribution_array_batch(cos_attr_raw, normalize=normalize, eps=eps)
-    return out
+            out["cos_attr"] = _scale_attribution_array_batch(
+                cos_attr_raw,
+                normalize=normalize,
+                eps=eps,
+                array_namespace=xp,
+            )
+    return as_numpy_dict(out, xp)
 
 
 def _batched_perturbation_scores(
@@ -302,6 +329,7 @@ def _batched_perturbation_scores(
     max_working_bytes: int = 256 * 1024 * 1024,
     base_prob: Optional[np.ndarray] = None,
     baseline_prob: Optional[np.ndarray] = None,
+    array_namespace: Any = np,
 ) -> Dict[str, np.ndarray]:
     """Compute deletion/insertion metrics for many explanations with two model calls.
 
@@ -309,6 +337,7 @@ def _batched_perturbation_scores(
     used by validation selection to batch all validation samples for a lambda
     candidate and avoid one predict_proba call per sample and per curve.
     """
+    xp = array_namespace
     n, d = X.shape
     m = int(frac_arr.shape[0])
     if attributions.shape != X.shape:
@@ -347,6 +376,7 @@ def _batched_perturbation_scores(
                 max_working_bytes=max_working_bytes,
                 base_prob=None if base_prob is None else base_prob[start : start + chunk_size],
                 baseline_prob=None if baseline_prob is None else baseline_prob[start : start + chunk_size],
+                array_namespace=xp,
             )
             for start in range(0, n, chunk_size)
         ]
@@ -388,17 +418,19 @@ def _batched_perturbation_scores(
             insertion_prob_unique[:, pos] = base_prob_arr
 
     if m_inner > 0:
-        mask = _topk_masks_for_counts(attributions, inner_ks)
+        X_gpu = xp.asarray(X, dtype=float)
+        baseline_gpu = xp.asarray(baseline, dtype=float)
+        mask = _topk_masks_for_counts(attributions, inner_ks, array_namespace=xp)
 
-        all_perturbed = np.empty((2 * n * m_inner, d), dtype=float)
+        all_perturbed = xp.empty((2 * n * m_inner, d), dtype=float)
         deletion = all_perturbed[: n * m_inner].reshape(n, m_inner, d)
         insertion = all_perturbed[n * m_inner :].reshape(n, m_inner, d)
-        deletion[...] = X[:, None, :]
-        np.copyto(deletion, baseline[None, None, :], where=mask)
-        insertion[...] = baseline[None, None, :]
-        np.copyto(insertion, X[:, None, :], where=mask)
+        deletion[...] = X_gpu[:, None, :]
+        xp.copyto(deletion, baseline_gpu[None, None, :], where=mask)
+        insertion[...] = baseline_gpu[None, None, :]
+        xp.copyto(insertion, X_gpu[:, None, :], where=mask)
 
-        all_proba = _predict_proba_matrix(model, all_perturbed)
+        all_proba = _predict_proba_matrix(model, as_numpy_array(all_perturbed, xp))
         if int(np.max(target_label_indices)) >= all_proba.shape[1]:
             raise ValueError("target label index exceeds predict_proba width")
 
@@ -443,8 +475,10 @@ def _batched_perturbation_scores_for_lambda_grid(
     max_working_bytes: int = 256 * 1024 * 1024,
     base_prob: Optional[np.ndarray] = None,
     baseline_prob: Optional[np.ndarray] = None,
+    array_namespace: Any = np,
 ) -> Dict[str, np.ndarray]:
     """Compute perturbation metrics for all lambda candidates in one model call."""
+    xp = array_namespace
     n, d = X.shape
     l_count = int(lambdas.shape[0])
     ks, ks_inverse = _rounded_feature_counts(frac_arr, d)
@@ -491,6 +525,7 @@ def _batched_perturbation_scores_for_lambda_grid(
                     max_working_bytes=max_working_bytes,
                     base_prob=None if base_prob is None else base_prob[start : start + sample_chunk_size],
                     baseline_prob=None if baseline_prob is None else baseline_prob[start : start + sample_chunk_size],
+                    array_namespace=xp,
                 )
                 for start in range(0, n, sample_chunk_size)
             ]
@@ -510,6 +545,7 @@ def _batched_perturbation_scores_for_lambda_grid(
                 max_working_bytes=max_working_bytes,
                 base_prob=base_prob,
                 baseline_prob=baseline_prob,
+                array_namespace=xp,
             )
             for start in range(0, l_count, lambda_chunk_size)
         ]
@@ -551,24 +587,28 @@ def _batched_perturbation_scores_for_lambda_grid(
             insertion_prob_unique[:, :, pos] = base_prob_arr[None, :]
 
     if m_inner > 0:
-        lam = lambdas.astype(float, copy=False)[:, None, None]
-        attr = lam * diff_attr[None, :, :] + (1.0 - lam) * cos_attr[None, :, :]
-        mask = _topk_masks_for_counts(attr.reshape(l_count * n, d), inner_ks).reshape(
+        X_gpu = xp.asarray(X, dtype=float)
+        baseline_gpu = xp.asarray(baseline, dtype=float)
+        diff_attr_gpu = xp.asarray(diff_attr, dtype=float)
+        cos_attr_gpu = xp.asarray(cos_attr, dtype=float)
+        lam = xp.asarray(lambdas, dtype=float)[:, None, None]
+        attr = lam * diff_attr_gpu[None, :, :] + (1.0 - lam) * cos_attr_gpu[None, :, :]
+        mask = _topk_masks_for_counts(attr.reshape(l_count * n, d), inner_ks, array_namespace=xp).reshape(
             l_count,
             n,
             m_inner,
             d,
         )
 
-        all_perturbed = np.empty((n_perturbed, d), dtype=float)
+        all_perturbed = xp.empty((n_perturbed, d), dtype=float)
         deletion = all_perturbed[: l_count * n * m_inner].reshape(l_count, n, m_inner, d)
         insertion = all_perturbed[l_count * n * m_inner :].reshape(l_count, n, m_inner, d)
-        deletion[...] = X[None, :, None, :]
-        np.copyto(deletion, baseline[None, None, None, :], where=mask)
-        insertion[...] = baseline[None, None, None, :]
-        np.copyto(insertion, X[None, :, None, :], where=mask)
+        deletion[...] = X_gpu[None, :, None, :]
+        xp.copyto(deletion, baseline_gpu[None, None, None, :], where=mask)
+        insertion[...] = baseline_gpu[None, None, None, :]
+        xp.copyto(insertion, X_gpu[None, :, None, :], where=mask)
 
-        all_proba = _predict_proba_matrix(model, all_perturbed)
+        all_proba = _predict_proba_matrix(model, as_numpy_array(all_perturbed, xp))
         if int(np.max(target_label_indices)) >= all_proba.shape[1]:
             raise ValueError("target label index exceeds predict_proba width")
 
@@ -608,10 +648,15 @@ def _hyb_metric_components_for_prototype_indices_batch(
     anchor: np.ndarray,
     eps: float,
     include_l1: bool = True,
+    array_namespace: Any = np,
 ) -> Dict[str, np.ndarray]:
     """Precompute only scalar batch components needed for grid-search scoring."""
-    pos_idx = np.asarray(pos_idx, dtype=np.intp)
-    neg_idx = np.asarray(neg_idx, dtype=np.intp)
+    xp = array_namespace
+    X = xp.asarray(X, dtype=float)
+    prototypes = xp.asarray(prototypes, dtype=float)
+    anchor = xp.asarray(anchor, dtype=float)
+    pos_idx = xp.asarray(pos_idx, dtype=np.intp)
+    neg_idx = xp.asarray(neg_idx, dtype=np.intp)
     if pos_idx.shape != (X.shape[0],) or neg_idx.shape != (X.shape[0],):
         raise ValueError("prototype index arrays must have shape (n_samples,)")
 
@@ -620,29 +665,29 @@ def _hyb_metric_components_for_prototype_indices_batch(
 
     pos_delta = X - p_pos
     neg_delta = X - p_neg
-    np.square(pos_delta, out=pos_delta)
-    np.square(neg_delta, out=neg_delta)
-    pos_sqdist = np.sum(pos_delta, axis=1)
-    neg_sqdist = np.sum(neg_delta, axis=1)
+    xp.square(pos_delta, out=pos_delta)
+    xp.square(neg_delta, out=neg_delta)
+    pos_sqdist = xp.sum(pos_delta, axis=1)
+    neg_sqdist = xp.sum(neg_delta, axis=1)
     diff_ev_raw = neg_sqdist - pos_sqdist
 
     z = X - anchor[None, :]
     q_pos = p_pos - anchor[None, :]
     q_neg = p_neg - anchor[None, :]
-    n_z = np.sqrt(np.sum(z * z, axis=1) + eps * eps)
-    n_pos = np.sqrt(np.sum(q_pos * q_pos, axis=1) + eps * eps)
-    n_neg = np.sqrt(np.sum(q_neg * q_neg, axis=1) + eps * eps)
+    n_z = xp.sqrt(xp.sum(z * z, axis=1) + eps * eps)
+    n_pos = xp.sqrt(xp.sum(q_pos * q_pos, axis=1) + eps * eps)
+    n_neg = xp.sqrt(xp.sum(q_neg * q_neg, axis=1) + eps * eps)
 
     if include_l1:
         pos_by_feature = z * q_pos
         pos_by_feature /= (n_z * n_pos)[:, None]
         neg_by_feature = z * q_neg
         neg_by_feature /= (n_z * n_neg)[:, None]
-        cos_pos_raw = np.sum(pos_by_feature, axis=1)
-        cos_neg_raw = np.sum(neg_by_feature, axis=1)
+        cos_pos_raw = xp.sum(pos_by_feature, axis=1)
+        cos_neg_raw = xp.sum(neg_by_feature, axis=1)
     else:
-        cos_pos_raw = np.einsum("ij,ij->i", z, q_pos) / (n_z * n_pos)
-        cos_neg_raw = np.einsum("ij,ij->i", z, q_neg) / (n_z * n_neg)
+        cos_pos_raw = xp.einsum("ij,ij->i", z, q_pos) / (n_z * n_pos)
+        cos_neg_raw = xp.einsum("ij,ij->i", z, q_neg) / (n_z * n_neg)
     cos_ev_raw = cos_pos_raw - cos_neg_raw
 
     out = {
@@ -652,22 +697,22 @@ def _hyb_metric_components_for_prototype_indices_batch(
     if include_l1:
         diff_attr_raw = neg_delta
         diff_attr_raw -= pos_delta
-        diff_ev_l1_raw = np.sum(diff_attr_raw, axis=1)
-        diff_scale = np.sum(np.abs(diff_attr_raw), axis=1)
-        diff_ok = (diff_scale > eps) & np.isfinite(diff_scale)
-        diff_ev_l1 = np.zeros_like(diff_ev_raw, dtype=float)
+        diff_ev_l1_raw = xp.sum(diff_attr_raw, axis=1)
+        diff_scale = xp.sum(xp.abs(diff_attr_raw), axis=1)
+        diff_ok = (diff_scale > eps) & xp.isfinite(diff_scale)
+        diff_ev_l1 = xp.zeros_like(diff_ev_raw, dtype=float)
         diff_ev_l1[diff_ok] = diff_ev_l1_raw[diff_ok] / diff_scale[diff_ok]
 
         cos_attr_raw = pos_by_feature
         cos_attr_raw -= neg_by_feature
-        cos_ev_l1_raw = np.sum(cos_attr_raw, axis=1)
-        cos_scale = np.sum(np.abs(cos_attr_raw), axis=1)
-        cos_ok = (cos_scale > eps) & np.isfinite(cos_scale)
-        cos_ev_l1 = np.zeros_like(cos_ev_raw, dtype=float)
+        cos_ev_l1_raw = xp.sum(cos_attr_raw, axis=1)
+        cos_scale = xp.sum(xp.abs(cos_attr_raw), axis=1)
+        cos_ok = (cos_scale > eps) & xp.isfinite(cos_scale)
+        cos_ev_l1 = xp.zeros_like(cos_ev_raw, dtype=float)
         cos_ev_l1[cos_ok] = cos_ev_l1_raw[cos_ok] / cos_scale[cos_ok]
         out["diff_ev_l1"] = diff_ev_l1
         out["cos_ev_l1"] = cos_ev_l1
-    return out
+    return as_numpy_dict(out, xp)
 
 
 __all__: list[str] = []

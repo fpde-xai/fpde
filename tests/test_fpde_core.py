@@ -520,6 +520,26 @@ def test_hybrid_grid_explanation_is_finite():
         assert np.isfinite(detail["evidence"])
 
 
+def test_engine_device_auto_matches_cpu_backend():
+    X_train, y_train, X_test, clf = _fit_classifier(n_classes=3)
+    cpu_engine = FPDEEngine.fit(X_train, y_train, model=clf, device="cpu")
+    auto_engine = FPDEEngine.fit(X_train, y_train, model=clf, device="auto")
+
+    cpu_attr, cpu_details = cpu_engine.explain_batch(X_test[:4], lambda_hyb=0.5)
+    auto_attr, auto_details = auto_engine.explain_batch(X_test[:4], lambda_hyb=0.5)
+
+    assert auto_engine.device in {"cpu", "cuda"}
+    np.testing.assert_allclose(auto_attr, cpu_attr)
+    assert [row["target_label"] for row in auto_details] == [row["target_label"] for row in cpu_details]
+
+
+def test_engine_rejects_unknown_device():
+    X_train, y_train, _, clf = _fit_classifier(n_classes=2)
+
+    with pytest.raises(ValueError, match="device"):
+        FPDEEngine.fit(X_train, y_train, model=clf, device="tpu")
+
+
 def test_zero_variance_feature_does_not_crash():
     X_train, y_train, X_test, clf = _fit_classifier(n_classes=2)
     X_train = np.c_[X_train, np.ones(X_train.shape[0])]

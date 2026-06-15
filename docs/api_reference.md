@@ -17,7 +17,7 @@ lambda posterior selection.
 ### `FPDEEngine.fit`
 
 ```python
-FPDEEngine.fit(X_train, y_train, model=None, baseline=None)
+FPDEEngine.fit(X_train, y_train, model=None, baseline=None, device="cpu")
 ```
 
 Fits reusable FPDE state from training data.
@@ -28,8 +28,16 @@ Fits reusable FPDE state from training data.
 | `y_train` | Training labels with one label per row in `X_train`. |
 | `model` | Optional classifier. Required later when an operation needs `predict_proba`. |
 | `baseline` | Optional replacement vector for perturbation curves. Defaults to the training mean. |
+| `device` | `"cpu"` by default. Use `"cuda"`/`"gpu"`/`"cupy"` to require CuPy on an NVIDIA CUDA device, or `"auto"` to use CuPy when available and otherwise fall back to CPU. |
 
 Returns an `FPDEEngine`.
+
+When `device` resolves to CUDA, FPDE uses CuPy for vectorized attribution
+components and validation perturbation-array construction. The `fpde[gpu]`
+extra installs the CUDA 13 CuPy wheel; install a different CuPy package
+manually if your CUDA stack requires one. Model calls such as scikit-learn
+`predict_proba` remain on the model backend, so arrays are converted back to
+NumPy at that boundary.
 
 ### `engine.explain_one`
 

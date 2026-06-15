@@ -90,6 +90,27 @@ print(details["target_label"], details["rival_label"], details["evidence"])
 Positive attribution values support the target class relative to the rival
 class. Negative values support the rival class relative to the target class.
 
+### Optional NVIDIA GPU acceleration
+
+FPDE can use CuPy for the vectorized attribution and validation-array
+construction paths. The optional GPU extra installs the CUDA 13 CuPy wheel;
+if your CUDA stack needs a different CuPy package, install that package
+manually instead. Then request CUDA on the engine:
+
+```bash
+pip install "fpde[gpu]"
+```
+
+```python
+engine = FPDEEngine.fit(X_train, y_train, model=model, device="cuda")
+attributions, details = engine.explain_batch(X_test[:128], lambda_hyb=0.5)
+```
+
+Use `device="auto"` to use CuPy when a CUDA device is available and otherwise
+fall back to CPU. Model calls such as scikit-learn `predict_proba` still run
+through the model's own backend; FPDE converts arrays back to NumPy at that
+boundary.
+
 To visualize an explanation, install the optional plotting extra and pass
 feature names when available:
 

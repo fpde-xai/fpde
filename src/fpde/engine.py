@@ -25,6 +25,7 @@ from ._batch import (
     _hyb_components_for_prototype_indices_batch,
     _hyb_metric_components_for_prototype_indices_batch,
 )
+from ._backend import DeviceMode, resolve_array_backend
 from .prototypes import (
     _anchor_from_context,
     _context_from_training,
@@ -277,7 +278,10 @@ class FPDEEngine:
         baseline: Optional[np.ndarray | Sequence[float]] = None,
         *,
         context: Optional[FPDEContext] = None,
+        device: DeviceMode = "cpu",
     ) -> None:
+        self._array_backend = resolve_array_backend(device)
+        self.device = self._array_backend.name
         X_train_arr = _as_2d_float("X_train", X_train)
         y_train_arr = _as_label_array(y_train)
         if X_train_arr.shape[0] != y_train_arr.shape[0]:
@@ -312,9 +316,10 @@ class FPDEEngine:
         y_train: Sequence[Any],
         model: Optional[Any] = None,
         baseline: Optional[np.ndarray | Sequence[float]] = None,
+        device: DeviceMode = "cpu",
     ) -> "FPDEEngine":
         """Fit a reusable FPDE engine from training data."""
-        return cls(X_train, y_train, model=model, baseline=baseline)
+        return cls(X_train, y_train, model=model, baseline=baseline, device=device)
 
     @staticmethod
     def _build_label_index(labels: np.ndarray) -> Optional[Dict[Any, int]]:
@@ -413,6 +418,7 @@ class FPDEEngine:
             eps=eps,
             include_scores=include_scores,
             component_mode=component_mode,
+            array_namespace=self._array_backend.xp,
         )
 
         attr = _mixed_hyb_component(comp, lambda_hyb, "diff_attr", "cos_attr")
@@ -677,6 +683,7 @@ class FPDEEngine:
                         anchor=anchor,
                         eps=eps,
                         include_l1=include_l1_components,
+                        array_namespace=self._array_backend.xp,
                     )
         except Exception:
             component_by_strategy = {}
@@ -840,6 +847,7 @@ class FPDEEngine:
             normalize=normalize,
             eps=eps,
             component_mode=component_mode,
+            array_namespace=self._array_backend.xp,
         )
 
         all_curves: Optional[Dict[str, np.ndarray]]
@@ -855,6 +863,7 @@ class FPDEEngine:
                     max_working_bytes=max_working_bytes,
                     base_prob=base_prob,
                     baseline_prob=baseline_prob,
+                    array_namespace=self._array_backend.xp,
                 )
                 all_curves = {
                     name: np.broadcast_to(values, (unique_lambdas_arr.shape[0], values.shape[0]))
@@ -871,6 +880,7 @@ class FPDEEngine:
                     max_working_bytes=max_working_bytes,
                     base_prob=base_prob,
                     baseline_prob=baseline_prob,
+                    array_namespace=self._array_backend.xp,
                 )
                 all_curves = {
                     name: np.broadcast_to(values, (unique_lambdas_arr.shape[0], values.shape[0]))
@@ -889,6 +899,7 @@ class FPDEEngine:
                     max_working_bytes=max_working_bytes,
                     base_prob=base_prob,
                     baseline_prob=baseline_prob,
+                    array_namespace=self._array_backend.xp,
                 )
         except Exception:
             all_curves = None
@@ -913,6 +924,7 @@ class FPDEEngine:
                         max_working_bytes=max_working_bytes,
                         base_prob=base_prob,
                         baseline_prob=baseline_prob,
+                        array_namespace=self._array_backend.xp,
                     )
                     p0 = curves["p0"]
                     deletion_auc = curves["deletion_auc"]
