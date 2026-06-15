@@ -5,11 +5,17 @@ import pytest
 
 from fpde import (
     DynamicFPDEExplanation,
+    NativeTimeDynamicFPDEExplanation,
     dynamic_cos_fpde,
     dynamic_diff_fpde,
     dynamic_fpde_explain_batch,
     dynamic_fpde_explain_one,
     dynamic_hyb_fpde,
+    native_dynamic_cos_fpde,
+    native_dynamic_diff_fpde,
+    native_dynamic_fpde_explain_batch,
+    native_dynamic_fpde_explain_one,
+    native_dynamic_hyb_fpde,
     plot_dynamic_attribution_heatmap,
     plot_dynamic_time_importance,
     prepare_dynamic_fpde_context,
@@ -369,3 +375,155 @@ def test_dynamic_plotting_helpers_accept_existing_axes():
     assert plot_dynamic_attribution_heatmap(explanation, ax=heatmap_ax) is heatmap_ax
     assert [name for name, _, _ in heatmap_ax.calls].count("imshow") == 1
     assert len(heatmap_ax.figure.colorbar_calls) == 1
+
+
+def test_native_dynamic_shape_preservation_and_metadata():
+    X = np.random.default_rng(0).normal(size=(137, 20))
+    p_target = np.zeros(20)
+    p_rival = np.ones(20)
+
+    exp = native_dynamic_fpde_explain_one(
+        X,
+        p_target=p_target,
+        p_rival=p_rival,
+        mode="dynamic_diff",
+        feature_names=[f"f{i}" for i in range(20)],
+        timestamps_sec=np.arange(137, dtype=float),
+    )
+
+    assert isinstance(exp, NativeTimeDynamicFPDEExplanation)
+    assert exp.attributions.shape == X.shape
+    assert exp.time_importance.shape == (137,)
+    assert exp.feature_importance.shape == (20,)
+    assert exp.time_mode == "native"
+    assert exp.temporal_resampling is False
+    assert exp.temporal_pooling is False
+    assert exp.details["time_mode"] == "native"
+    assert exp.details["temporal_resampling"] is False
+    assert exp.details["temporal_pooling"] is False
+    assert exp.details["prototype_kind"] == "feature_vector"
+    assert exp.details["input_shape"] == X.shape
+    assert exp.details["output_shape"] == X.shape
+
+
+def test_native_dynamic_variable_length_batch_preserves_each_length():
+    rng = np.random.default_rng(1)
+    X_list = [
+        rng.normal(size=(100, 20)),
+        rng.normal(size=(777, 20)),
+        rng.normal(size=(2400, 20)),
+    ]
+    p_target = np.zeros(20)
+    p_rival = np.ones(20)
+
+    explanations = native_dynamic_fpde_explain_batch(
+        X_list,
+        p_targets=p_target,
+        p_rivals=[p_rival, p_rival + 1.0, p_rival + 2.0],
+        target_labels=["a", "b", "c"],
+        rival_labels=["x", "y", "z"],
+    )
+
+    assert [exp.attributions.shape for exp in explanations] == [X.shape for X in X_list]
+    assert [exp.time_importance.shape for exp in explanations] == [(100,), (777,), (2400,)]
+
+
+def test_native_dynamic_diff_has_no_temporal_spreading_from_resampling():
+    X = np.zeros((101, 3), dtype=float)
+    X[50, 1] = 100.0
+    p_target = np.zeros(3, dtype=float)
+    p_rival = np.ones(3, dtype=float)
+
+    attr, evidence = native_dynamic_diff_fpde(X, p_target, p_rival)
+    expected = (X - p_rival) ** 2 - (X - p_target) ** 2
+
+    assert attr.shape == (101, 3)
+    np.testing.assert_allclose(attr, expected)
+    assert attr[50, 1] == pytest.approx(expected[50, 1])
+    assert attr[49, 1] == pytest.approx(expected[49, 1])
+    assert attr[51, 1] == pytest.approx(expected[51, 1])
+    assert attr[49, 1] == pytest.approx(attr[51, 1])
+    assert evidence == pytest.approx(float(np.sum(attr)))
+
+
+def test_native_dynamic_diff_exactness():
+    rng = np.random.default_rng(2)
+    X = rng.normal(size=(17, 5))
+    p_target = rng.normal(size=5)
+    p_rival = rng.normal(size=5)
+
+    attr, evidence = native_dynamic_diff_fpde(X, p_target, p_rival)
+
+    assert evidence == pytest.approx(float(np.sum(attr)))
+    assert abs(evidence - np.sum(attr)) <= 1e-9
+
+
+def test_native_dynamic_cos_numerical_stability():
+    cases = [
+        (np.zeros((11, 4)), np.zeros(4), np.zeros(4), np.zeros(4)),
+        (np.full((11, 4), 1e-300), np.full(4, 1e-300), np.full(4, -1e-300), np.zeros(4)),
+    ]
+
+    for X, p_target, p_rival, anchor in cases:
+        attr, evidence = native_dynamic_cos_fpde(X, p_target, p_rival, anchor=anchor)
+        assert attr.shape == X.shape
+        assert np.all(np.isfinite(attr))
+        assert np.isfinite(evidence)
+
+
+def test_native_dynamic_hyb_endpoints_match_components_without_normalization():
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(31, 6))
+    p_target = rng.normal(size=6)
+    p_rival = rng.normal(size=6)
+    diff_attr, _ = native_dynamic_diff_fpde(X, p_target, p_rival)
+    cos_attr, _ = native_dynamic_cos_fpde(X, p_target, p_rival)
+
+    hyb_diff, _, _ = native_dynamic_hyb_fpde(X, p_target, p_rival, lambda_hyb=1.0, normalize="none")
+    hyb_cos, _, _ = native_dynamic_hyb_fpde(X, p_target, p_rival, lambda_hyb=0.0, normalize="none")
+
+    np.testing.assert_allclose(hyb_diff, diff_attr)
+    np.testing.assert_allclose(hyb_cos, cos_attr)
+
+
+def test_native_dynamic_invalid_inputs_raise_clear_errors():
+    X = np.ones((5, 3))
+    p_target = np.zeros(3)
+    p_rival = np.ones(3)
+
+    with pytest.raises(ValueError, match="2D"):
+        native_dynamic_fpde_explain_one(np.ones((5, 3, 1)), p_target=p_target, p_rival=p_rival)
+    with pytest.raises(ValueError, match="p_target"):
+        native_dynamic_fpde_explain_one(X, p_target=np.zeros(2), p_rival=p_rival)
+    with pytest.raises(ValueError, match="p_rival"):
+        native_dynamic_fpde_explain_one(X, p_target=p_target, p_rival=np.ones(2))
+    with pytest.raises(ValueError, match="anchor"):
+        native_dynamic_fpde_explain_one(X, p_target=p_target, p_rival=p_rival, anchor=np.zeros(2))
+    with pytest.raises(ValueError, match="NaN or inf"):
+        native_dynamic_fpde_explain_one(np.array([[np.nan, 1.0, 2.0]]), p_target=p_target, p_rival=p_rival)
+    with pytest.raises(ValueError, match="NaN or inf"):
+        native_dynamic_fpde_explain_one(np.array([[np.inf, 1.0, 2.0]]), p_target=p_target, p_rival=p_rival)
+    with pytest.raises(ValueError, match="timestamps_sec"):
+        native_dynamic_fpde_explain_one(X, p_target=p_target, p_rival=p_rival, timestamps_sec=[0.0, 1.0])
+    with pytest.raises(ValueError, match="feature_names"):
+        native_dynamic_fpde_explain_one(X, p_target=p_target, p_rival=p_rival, feature_names=["a", "b"])
+    with pytest.raises(ValueError, match="lambda_hyb"):
+        native_dynamic_hyb_fpde(X, p_target, p_rival, lambda_hyb=-0.1)
+    with pytest.raises(ValueError, match="lambda_hyb"):
+        native_dynamic_hyb_fpde(X, p_target, p_rival, lambda_hyb=1.1)
+
+
+def test_dynamic_plotting_helpers_accept_native_explanations():
+    exp = native_dynamic_fpde_explain_one(
+        np.array([[0.0, 1.0], [2.0, 3.0]], dtype=float),
+        p_target=np.zeros(2),
+        p_rival=np.ones(2),
+        mode="dynamic_diff",
+    )
+    time_ax = _FakeAxes()
+    heatmap_ax = _FakeAxes()
+
+    assert plot_dynamic_time_importance(exp, ax=time_ax) is time_ax
+    assert [name for name, _, _ in time_ax.calls].count("bar") == 1
+    assert plot_dynamic_attribution_heatmap(exp, ax=heatmap_ax) is heatmap_ax
+    assert [name for name, _, _ in heatmap_ax.calls].count("imshow") == 1

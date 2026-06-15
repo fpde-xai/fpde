@@ -22,7 +22,7 @@ probabilities.
 - Select `lambda_hyb` with held-out deletion and insertion validation.
 - Build an experimental Bayesian posterior over Hyb-FPDE `lambda_hyb`
   candidates.
-- Explain variable-length frame-level feature matrices with Dynamic-FPDE.
+- Explain variable-length frame-level feature matrices with Native-Time Dynamic-FPDE.
 - Compute deletion and insertion perturbation curves for an attribution vector.
 - Plot attribution bars, cumulative waterfalls and contribution summaries, attribution
   heatmaps, FPDE-native prototype similarity distributions, and perturbation
@@ -237,20 +237,21 @@ feature-level prototype uncertainty, or model black-box classifier uncertainty.
 
 ## Dynamic-FPDE
 
-Dynamic-FPDE explains variable-length frame-level feature matrices with shape
-`(T, F)`, where `T` is the number of time frames and `F` is the number of
-frame-level features. It returns an attribution matrix with the same shape.
-Positive values support the target prototype over the rival prototype, and
-negative values support the rival prototype over the target prototype.
+Native-Time Dynamic-FPDE is the intended Dynamic-FPDE formulation for
+variable-length music and cover-song analysis. It explains frame-level
+acoustic feature matrices with shape `(T, F)`, where `T` is the number of
+native frames and `F` is the number of frame-level features. It returns an
+attribution matrix with exactly the same shape.
 
 ```python
-from fpde import prepare_dynamic_fpde_context, dynamic_fpde_explain_one
+from fpde import native_dynamic_fpde_explain_one
 
-context = prepare_dynamic_fpde_context(X_train_sequences, y_train, prototype_length=128)
-explanation = dynamic_fpde_explain_one(
+explanation = native_dynamic_fpde_explain_one(
     X_sample,
-    context,
+    p_target=target_proto,
+    p_rival=rival_proto,
     target_label=target_label,
+    rival_label=rival_label,
     mode="dynamic_hyb",
     lambda_hyb=0.5,
 )
@@ -259,8 +260,19 @@ print(explanation.attributions.shape)
 print(explanation.time_importance.shape)
 ```
 
-Dynamic-FPDE is prototype evidence decomposition, not a causal explanation. In
-v0.1, it supports linear temporal resampling for frame-level features only.
+Positive values support the target prototype over the rival prototype, and
+negative values support the rival prototype over the target prototype.
+
+The existing `prepare_dynamic_fpde_context` / `dynamic_fpde_explain_one` API is
+retained as a legacy resampled-time variant for controlled fixed-length
+benchmark comparisons. It linearly resamples sequences through
+`prototype_length`, so it is not the primary formulation for music-level
+Dynamic-FPDE explanations.
+
+Dynamic-FPDE is prototype evidence decomposition, not a causal explanation. It
+explains frame-level feature matrices, not raw waveform samples; it does not
+perform verse/chorus alignment, DTW, or sampling-rate-invariant audio
+normalization.
 
 ## Run The Example
 

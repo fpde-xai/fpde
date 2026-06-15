@@ -1,34 +1,47 @@
 # Dynamic-FPDE
 
-Dynamic-FPDE extends FPDE from fixed feature vectors to variable-length
-frame-level time-series feature matrices.
+Dynamic-FPDE extends FPDE from fixed feature vectors to frame-level
+time-series feature matrices.
 
-Use Dynamic-FPDE when each sample is a matrix:
+Native-Time Dynamic-FPDE is the intended Dynamic-FPDE formulation for
+variable-length music and cover-song analysis. It preserves each input clip's
+native frame-level time axis and computes a time-feature prototype-evidence
+matrix without temporal pooling, fixed-length resampling, or temporal
+aggregation.
+
+Use Native-Time Dynamic-FPDE when each sample is a matrix:
 
 ```text
 X shape = (T, F)
 ```
 
-where `T` is the number of time frames and `F` is the number of frame-level
-features. The returned attribution matrix has the same shape:
+where `T` is the number of native frames and `F` is the number of frame-level
+acoustic features. The returned attribution matrix has exactly the same shape:
 
 ```text
 Phi shape = (T, F)
 ```
 
 `Phi[t, f]` is prototype evidence for frame `t` and feature `f`. Positive
-values support the target class prototype relative to the rival prototype.
-Negative values support the rival class prototype relative to the target
-prototype. The sign always depends on the chosen target/rival pair. Evidence
+values support the target prototype relative to the rival prototype. Negative
+values support the rival prototype relative to the target prototype. Evidence
 scores are prototype-contrast scores, not probabilities.
 
-## Dynamic-Diff
+## Native-Time Dynamic-Diff
 
-Dynamic-Diff decomposes the squared-distance contrast elementwise:
+Native-Time Dynamic-Diff uses feature-vector prototypes:
 
 ```text
-Phi_diff[t, f] = (X[t, f] - P_rival[t, f])**2
-               - (X[t, f] - P_target[t, f])**2
+X_i      in R^(T_i x F)
+p_target in R^F
+p_rival  in R^F
+```
+
+It decomposes the squared-distance contrast at every native frame:
+
+```text
+Phi_diff[t, f] = (X[t, f] - p_rival[f])**2
+               - (X[t, f] - p_target[f])**2
 
 E_diff = sum(Phi_diff)
 ```
@@ -36,39 +49,87 @@ E_diff = sum(Phi_diff)
 A positive element is closer to the target prototype than to the rival
 prototype under this squared-distance contrast.
 
-## Dynamic-Cos
+## Native-Time Dynamic-Cos
 
-Dynamic-Cos decomposes a cosine-similarity contrast after subtracting an
-anchor:
+Native-Time Dynamic-Cos decomposes a cosine-similarity contrast after
+subtracting a feature-vector anchor:
 
 ```text
-Z        = X - anchor
-Q_target = P_target - anchor
-Q_rival  = P_rival - anchor
+z[t]     = X[t, :] - anchor
+q_target = p_target - anchor
+q_rival  = p_rival  - anchor
 
-Phi_cos[t, f] = Z[t, f] * Q_target[t, f] / (norm(Z) * norm(Q_target))
-              - Z[t, f] * Q_rival[t, f] / (norm(Z) * norm(Q_rival))
-
-E_cos = sum(Phi_cos)
+Phi_cos[t, f] =
+    z[t, f] * q_target[f] / ((||z[t]||_2 + eps) * (||q_target||_2 + eps))
+  - z[t, f] * q_rival[f]  / ((||z[t]||_2 + eps) * (||q_rival||_2 + eps))
 ```
 
-This is a coordinate decomposition of the cosine contrast. It is not a causal
-removal effect.
+The input norm `||z[t]||_2` is computed per frame. Prototype norms are
+feature-vector norms. No time-axis resampling, pooling, or aggregation is
+performed.
 
-## Dynamic-Hyb
+## Native-Time Dynamic-Hyb
 
-Dynamic-Hyb mixes Dynamic-Diff and Dynamic-Cos attribution matrices:
+Native-Time Dynamic-Hyb mixes Native-Time Dynamic-Diff and Dynamic-Cos
+attribution matrices:
 
 ```text
-Phi_hyb = lambda_hyb * Phi_diff_norm + (1 - lambda_hyb) * Phi_cos_norm
+Phi_hyb = lambda_hyb * Phi_diff + (1 - lambda_hyb) * Phi_cos
 ```
 
 `lambda_hyb=1.0` is the Dynamic-Diff endpoint, and `lambda_hyb=0.0` is the
-Dynamic-Cos endpoint. With `normalize="l1"`, each component matrix is divided
-by `sum(abs(Phi)) + eps` before mixing. With `normalize="none"`, raw component
-matrices are mixed directly.
+Dynamic-Cos endpoint. The default `normalize="none"` mixes raw component
+matrices. If `normalize="l1"` is used, it normalizes the full attribution
+matrix for each component only; it does not resample, pool, or otherwise
+change the time axis.
 
-## Basic Usage
+## Native-Time Usage
+
+```python
+from fpde import native_dynamic_fpde_explain_one
+
+explanation = native_dynamic_fpde_explain_one(
+    X_sample,              # shape (T, F)
+    p_target=target_proto, # shape (F,)
+    p_rival=rival_proto,   # shape (F,)
+    target_label="target",
+    rival_label="rival",
+    mode="dynamic_hyb",
+    lambda_hyb=0.5,
+)
+
+print(explanation.attributions.shape)      # exactly X_sample.shape
+print(explanation.time_importance.shape)   # (T,)
+print(explanation.feature_importance.shape) # (F,)
+print(explanation.details["time_mode"])    # "native"
+```
+
+For variable-length batches, use `native_dynamic_fpde_explain_batch`. It keeps
+the input as a list of 2D arrays and does not pad or resample:
+
+```python
+from fpde import native_dynamic_fpde_explain_batch
+
+explanations = native_dynamic_fpde_explain_batch(
+    [X1, X2, X3],
+    p_targets=target_proto,
+    p_rivals=rival_proto,
+)
+```
+
+If `X1.shape == (100, F)`, `X2.shape == (777, F)`, and
+`X3.shape == (2400, F)`, the returned attribution shapes are `(100, F)`,
+`(777, F)`, and `(2400, F)`.
+
+## Legacy Resampled-Time Variant
+
+The existing resampled-time formulation can be useful for controlled
+fixed-length benchmark comparisons, but it may smooth, stretch, or distort
+short transient events such as drum attacks. Therefore, it should be treated
+as a legacy or benchmark-oriented variant rather than the primary formulation
+for music-level Dynamic-FPDE explanations.
+
+The legacy API remains available:
 
 ```python
 from fpde import prepare_dynamic_fpde_context, dynamic_fpde_explain_one
@@ -87,14 +148,12 @@ explanation = dynamic_fpde_explain_one(
     mode="dynamic_hyb",
     lambda_hyb=0.5,
 )
-
-print(explanation.attributions.shape)
-print(explanation.time_importance)
-print(explanation.feature_importance)
 ```
 
-If `rival_label=None`, Dynamic-FPDE chooses the closest non-target prototype
-after resampling prototypes to the sample length.
+`prepare_dynamic_fpde_context` builds class-mean temporal prototypes after
+linearly resampling each training sequence to `prototype_length`.
+`dynamic_fpde_explain_one` then resamples those stored temporal prototypes to
+the input length.
 
 ## Optional CUDA Tensor Operations
 
@@ -112,8 +171,8 @@ attr, evidence, details = dynamic_hyb_fpde_gpu(
 ```
 
 For batched input, CUDA helpers return attributions with shape `(N, T, F)` and
-evidence with shape `(N,)`. Pass `return_numpy=False` to keep returned arrays on
-the GPU as CuPy arrays.
+evidence with shape `(N,)`. Pass `return_numpy=False` to keep returned arrays
+on the GPU as CuPy arrays.
 
 Feature extraction and temporal resampling remain CPU-side. CUDA acceleration
 is intended for batched, already-resampled Dynamic-FPDE tensor operations.
@@ -121,8 +180,8 @@ is intended for batched, already-resampled Dynamic-FPDE tensor operations.
 ## Temporal Deletion And Insertion
 
 `temporal_deletion_insertion_curves` evaluates frame rankings with
-prototype-evidence curves. It does not evaluate class probabilities. Frames are
-ranked with `rank_by`:
+prototype-evidence curves for the legacy resampled-time context. It does not
+evaluate class probabilities. Frames are ranked with `rank_by`:
 
 - `"positive"` ranks by `max(time_importance, 0)`, descending. This is the
   default because the metric is intended to evaluate target-supporting frames.
@@ -140,23 +199,20 @@ insertion_gain_curve = (insertion_curve - insertion_curve[0]) / scale
 ```
 
 The reported `deletion_drop_auc`, `insertion_gain_auc`, and `combined_score`
-come from these normalized curves:
-
-```text
-combined_score = 0.5 * (deletion_drop_auc + insertion_gain_auc)
-```
-
-The returned `insertion_auc` key is retained as an alias for
-`insertion_gain_auc`; prefer `insertion_gain_auc` in new code.
+come from these normalized curves. The returned `insertion_auc` key is
+retained as an alias for `insertion_gain_auc`; prefer `insertion_gain_auc` in
+new code.
 
 ## Limitations
 
+- Dynamic-FPDE explains frame-level acoustic feature matrices, not raw waveform
+  samples.
+- Native-Time Dynamic-FPDE does not perform verse/chorus alignment.
+- Native-Time Dynamic-FPDE does not perform DTW.
 - Dynamic-FPDE is prototype evidence decomposition, not a causal explanation.
-- Deletion/insertion scores are normalized prototype evidence scores, not
-  probabilities.
+- Dynamic-FPDE does not claim sampling-rate invariance.
+- Sampling-rate differences should be controlled before feature extraction by
+  converting audio to a common sample rate.
 - Attribution signs depend on the target/rival prototype pair.
-- v0.1 uses linear temporal resampling only.
-- CUDA helpers do not accelerate feature extraction or temporal resampling.
-- Inputs are frame-level feature matrices only.
-- Raw waveform direct explanation, DTW alignment, Delta-Dynamic-FPDE,
-  AIME/SHAP/LIME comparisons, and recommender-specific logic are out of scope.
+- CUDA helpers currently target already-resampled tensor operations, not
+  Native-Time feature-vector prototypes.

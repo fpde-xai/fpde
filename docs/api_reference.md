@@ -288,12 +288,119 @@ Returns an `FPDEContext`.
 
 ## Dynamic-FPDE API
 
-Dynamic-FPDE explains frame-level time-series feature matrices with shape
-`(T, F)` and returns attribution matrices with the same shape. It is prototype
-evidence decomposition, not a causal explanation. Dynamic-FPDE evidence values
-and validation curves are prototype evidence scores, not probabilities.
+Dynamic-FPDE explains frame-level acoustic feature matrices with shape
+`(T, F)` and returns prototype-evidence attribution matrices with shape
+`(T, F)`. It is prototype evidence decomposition, not a causal explanation.
+Dynamic-FPDE evidence values and validation curves are prototype evidence
+scores, not probabilities.
 
-### `prepare_dynamic_fpde_context`
+Native-Time Dynamic-FPDE is the intended formulation for variable-length music
+and cover-song analysis. The older context-based API remains available as a
+legacy resampled-time / benchmark-oriented variant.
+
+### `native_dynamic_diff_fpde`
+
+```python
+native_dynamic_diff_fpde(X, p_target, p_rival)
+```
+
+Accepts `X` with shape `(T, F)` and feature-vector prototypes `p_target` and
+`p_rival` with shape `(F,)`. Computes:
+
+```text
+Phi_diff[t, f] = (X[t, f] - p_rival[f])**2
+               - (X[t, f] - p_target[f])**2
+```
+
+Returns `(Phi_diff, E_diff)`, where `Phi_diff.shape == X.shape`.
+
+### `native_dynamic_cos_fpde`
+
+```python
+native_dynamic_cos_fpde(X, p_target, p_rival, *, anchor=None, eps=1e-12)
+```
+
+Computes a native-time coordinate decomposition of the cosine contrast. The
+input norm is computed per frame, prototype norms are feature-vector norms,
+and no temporal resampling or pooling is performed.
+
+### `native_dynamic_hyb_fpde`
+
+```python
+native_dynamic_hyb_fpde(
+    X,
+    p_target,
+    p_rival,
+    *,
+    lambda_hyb=0.5,
+    normalize="none",
+    anchor=None,
+    eps=1e-12,
+)
+```
+
+Mixes Native-Time Dynamic-Diff and Dynamic-Cos attribution matrices.
+`lambda_hyb=1.0` is the Diff endpoint, and `lambda_hyb=0.0` is the Cos
+endpoint. `normalize="none"` is the default. `normalize="l1"` normalizes each
+full attribution matrix component and does not change the time axis.
+
+Returns `(Phi_hyb, E_hyb, details)`.
+
+### `native_dynamic_fpde_explain_one`
+
+```python
+native_dynamic_fpde_explain_one(
+    X,
+    *,
+    p_target,
+    p_rival,
+    target_label=None,
+    rival_label=None,
+    mode="dynamic_hyb",
+    lambda_hyb=0.5,
+    normalize="none",
+    anchor=None,
+    feature_names=None,
+    timestamps_sec=None,
+    eps=1e-12,
+    details=None,
+)
+```
+
+Explains one native-time sequence with feature-vector prototypes. The returned
+`NativeTimeDynamicFPDEExplanation` preserves `X.shape` exactly. Its `details`
+include `time_mode="native"`, `temporal_resampling=False`,
+`temporal_pooling=False`, `prototype_kind="feature_vector"`, `input_shape`,
+and `output_shape`.
+
+### `native_dynamic_fpde_explain_batch`
+
+```python
+native_dynamic_fpde_explain_batch(
+    X_list,
+    *,
+    p_targets,
+    p_rivals,
+    target_labels=None,
+    rival_labels=None,
+    mode="dynamic_hyb",
+    lambda_hyb=0.5,
+    normalize="none",
+    anchor=None,
+    feature_names=None,
+    timestamps_list=None,
+    eps=1e-12,
+)
+```
+
+Explains a list of variable-length `(T_i, F)` arrays without padding,
+resampling, or dense tensor conversion. `p_targets` and `p_rivals` may be a
+single `(F,)` vector broadcast to all samples or one vector per sample.
+
+### Legacy Resampled-Time API
+
+The following names remain available for existing code and benchmark-oriented
+fixed-length comparisons:
 
 ```python
 prepare_dynamic_fpde_context(
@@ -306,89 +413,10 @@ prepare_dynamic_fpde_context(
 )
 ```
 
-Builds one class-mean temporal prototype per label from a sequence of
-variable-length `(T_i, F)` arrays. Each training sequence is linearly resampled
-to `prototype_length`.
-
-Returns a `DynamicFPDEContext` with prototypes shaped `(n_classes,
-prototype_length, n_features)`, labels, mean and zero anchors, and metadata.
-Only `alignment="linear"` is supported in v0.1.
-
-### `resample_time_series_linear`
-
-```python
-resample_time_series_linear(X, target_length)
-```
-
-Linearly resamples a finite 2D sequence matrix to `(target_length, F)`.
-Single-frame inputs are repeated.
-
-### `dynamic_diff_fpde`
-
-```python
-dynamic_diff_fpde(X, P_target, P_rival)
-```
-
-Computes:
-
-```text
-Phi_diff[t, f] = (X[t, f] - P_rival[t, f])**2
-               - (X[t, f] - P_target[t, f])**2
-```
-
-Returns `(Phi_diff, E_diff)`, where `E_diff = Phi_diff.sum()`.
-
-### `dynamic_cos_fpde`
-
-```python
-dynamic_cos_fpde(X, P_target, P_rival, *, anchor=None, eps=1e-12)
-```
-
-Computes a coordinate decomposition of the cosine contrast between
-`X - anchor`, `P_target - anchor`, and `P_rival - anchor`. Returns
-`(Phi_cos, E_cos)`.
-
-### `dynamic_hyb_fpde`
-
-```python
-dynamic_hyb_fpde(
-    X,
-    P_target,
-    P_rival,
-    *,
-    lambda_hyb=0.5,
-    normalize="l1",
-    anchor=None,
-    eps=1e-12,
-)
-```
-
-Mixes Dynamic-Diff and Dynamic-Cos attribution matrices. `lambda_hyb=1.0` is
-the Dynamic-Diff endpoint, and `lambda_hyb=0.0` is the Dynamic-Cos endpoint.
-`normalize` may be `"l1"` or `"none"`.
-
-Returns `(Phi_hyb, E_hyb, details)`.
-
-### Dynamic-FPDE CUDA helpers
-
-```python
-from fpde.dynamic_cuda import (
-    dynamic_diff_fpde_gpu,
-    dynamic_cos_fpde_gpu,
-    dynamic_hyb_fpde_gpu,
-)
-```
-
-These optional CuPy helpers accept either one resampled tensor with shape
-`(T, F)` or a batch with shape `(N, T, F)`. For batched input, they return
-attributions with shape `(N, T, F)` and evidence with shape `(N,)`.
-
-Use `return_numpy=False` to keep CuPy arrays on device; by default results are
-converted back to NumPy/Python scalars. Feature extraction and
-`resample_time_series_linear` remain CPU-side. CUDA acceleration is intended
-for batched, already-resampled Dynamic-FPDE tensor operations.
-
-### `dynamic_fpde_explain_one`
+Builds one class-mean temporal prototype per label from variable-length
+`(T_i, F)` arrays. Each training sequence is linearly resampled to
+`prototype_length`. Returns a `DynamicFPDEContext` with prototypes shaped
+`(n_classes, prototype_length, n_features)`.
 
 ```python
 dynamic_fpde_explain_one(
@@ -405,31 +433,34 @@ dynamic_fpde_explain_one(
 )
 ```
 
-Explains one sequence. If `rival_label` is omitted, the closest non-target
-prototype is selected after resampling prototypes to the sample length.
-
-Returns a `DynamicFPDEExplanation` with `attributions`, `time_importance`,
-`feature_importance`, evidence, target/rival labels, residual, and details.
-
-### `dynamic_fpde_explain_batch`
+Explains one sequence with the legacy resampled-time context. If
+`rival_label` is omitted, the closest non-target prototype is selected after
+resampling temporal prototypes to the sample length.
 
 ```python
-dynamic_fpde_explain_batch(
-    X_list,
-    context,
-    *,
-    target_labels,
-    rival_labels=None,
-    mode="dynamic_hyb",
-    lambda_hyb=0.5,
-    normalize="l1",
-    anchor_strategy="mean",
-    eps=1e-12,
+dynamic_fpde_explain_batch(...)
+resample_time_series_linear(X, target_length)
+dynamic_diff_fpde(X, P_target, P_rival)
+dynamic_cos_fpde(X, P_target, P_rival, *, anchor=None, eps=1e-12)
+dynamic_hyb_fpde(X, P_target, P_rival, *, lambda_hyb=0.5, normalize="l1", anchor=None, eps=1e-12)
+```
+
+These legacy tensor-level functions use temporal prototype tensors with shape
+`(T, F)` and remain backward-compatible.
+
+### Dynamic-FPDE CUDA helpers
+
+```python
+from fpde.dynamic_cuda import (
+    dynamic_diff_fpde_gpu,
+    dynamic_cos_fpde_gpu,
+    dynamic_hyb_fpde_gpu,
 )
 ```
 
-Explains many variable-length sequences by calling
-`dynamic_fpde_explain_one` for each sample.
+These optional CuPy helpers accept either one already-resampled tensor with
+shape `(T, F)` or a batch with shape `(N, T, F)`. CUDA acceleration is
+intended for batched, already-resampled Dynamic-FPDE tensor operations.
 
 ### `temporal_deletion_insertion_curves`
 
@@ -449,27 +480,7 @@ temporal_deletion_insertion_curves(
 ```
 
 Ranks frames by `explanation.time_importance`, then computes prototype-driven
-deletion and insertion curves using Dynamic-Diff evidence. `rank_by` controls
-the frame ordering:
-
-- `"positive"`: rank by `max(time_importance, 0)`, descending. This is the
-  default for target-supporting-frame evaluation.
-- `"signed"`: rank by signed `time_importance`, descending.
-- `"absolute"`: rank by `abs(time_importance)`, descending.
-
-The raw `deletion_curve` and `insertion_curve` contain unbounded prototype
-evidence scores. The AUC metrics are computed from normalized curves:
-
-```text
-scale = abs(original_evidence - baseline_evidence) + eps
-deletion_drop_curve = (original_evidence - deletion_curve) / scale
-insertion_gain_curve = (insertion_curve - insertion_curve[0]) / scale
-```
-
-Returns raw curves, normalized curves, `deletion_drop_auc`,
-`insertion_gain_auc`, `combined_score`, and metadata. `insertion_auc` is kept
-as a backward-compatible alias for `insertion_gain_auc`; prefer
-`insertion_gain_auc` in new code.
+deletion and insertion curves using the legacy resampled-time context.
 
 ### `select_dynamic_lambda`
 
@@ -489,12 +500,8 @@ select_dynamic_lambda(
 )
 ```
 
-Evaluates Dynamic-Hyb lambda candidates with temporal deletion/insertion
-metrics from normalized prototype-evidence curves. The default lambda grid is
-`[0.0, 0.25, 0.5, 0.75, 1.0]`.
-
-Returns a dictionary with `best_lambda`, candidate `rows`, metric means, and
-the best row.
+Evaluates legacy Dynamic-Hyb lambda candidates with temporal
+deletion/insertion metrics from normalized prototype-evidence curves.
 
 ### Dynamic Plotting Helpers
 
@@ -503,8 +510,8 @@ plot_dynamic_time_importance(explanation, *, ax=None, title=None)
 plot_dynamic_attribution_heatmap(explanation, *, ax=None, title=None)
 ```
 
-These optional helpers require matplotlib only when no existing axes object is
-provided.
+These helpers accept either `DynamicFPDEExplanation` or
+`NativeTimeDynamicFPDEExplanation`.
 
 ## Explanation Functions
 
@@ -966,19 +973,27 @@ zero anchor, baseline, and feature count.
 
 ### `DynamicFPDEContext`
 
-Reusable Dynamic-FPDE state with temporal prototypes, prototype labels,
-prototype length, feature count, mean anchor, zero anchor, alignment, and
-metadata.
+Reusable state for the legacy resampled-time Dynamic-FPDE variant, with
+temporal prototypes, prototype labels, prototype length, feature count, mean
+anchor, zero anchor, alignment, and metadata.
 
 ### `DynamicFPDEExplanation`
 
-Result object for one Dynamic-FPDE explanation. The `attributions` field has
-shape `(T, F)`, `time_importance` has shape `(T,)`, and
-`feature_importance` has shape `(F,)`. For Dynamic-Hyb, `positive_score` and
-`negative_score` are deterministic weighted component scores; with
+Result object for one legacy resampled-time Dynamic-FPDE explanation. The
+`attributions` field has shape `(T, F)`, `time_importance` has shape `(T,)`,
+and `feature_importance` has shape `(F,)`. For Dynamic-Hyb, `positive_score`
+and `negative_score` are deterministic weighted component scores; with
 `normalize="l1"`, component scores are divided by each component attribution
 L1 scale before mixing. Hyb evidence remains the sum of the mixed attribution
 matrix.
+
+### `NativeTimeDynamicFPDEExplanation`
+
+Result object for one Native-Time Dynamic-FPDE explanation. The `attributions`
+field has exactly the same shape as the input feature matrix, `time_importance`
+has shape `(T,)`, and `feature_importance` has shape `(F,)`. The object and
+its `details` metadata record `time_mode="native"`,
+`temporal_resampling=False`, and `temporal_pooling=False`.
 
 ### `HybFPDEGridSearchResult`
 

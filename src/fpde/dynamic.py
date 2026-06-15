@@ -12,7 +12,7 @@ from ._array import _as_label_array, _safe_auc
 
 @dataclass(frozen=True)
 class DynamicFPDEContext:
-    """Reusable Dynamic-FPDE state built from variable-length sequences."""
+    """Reusable state for the legacy resampled-time Dynamic-FPDE variant."""
 
     prototypes: np.ndarray
     prototype_labels: np.ndarray
@@ -26,7 +26,7 @@ class DynamicFPDEContext:
 
 @dataclass(frozen=True)
 class DynamicFPDEExplanation:
-    """Result object for one Dynamic-FPDE sequence explanation."""
+    """Result object for one legacy resampled-time Dynamic-FPDE explanation."""
 
     mode: str
     evidence: float
@@ -41,6 +41,26 @@ class DynamicFPDEExplanation:
     details: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class NativeTimeDynamicFPDEExplanation:
+    """Result object for one native-time Dynamic-FPDE explanation."""
+
+    mode: str
+    evidence: float
+    attributions: np.ndarray
+    time_importance: np.ndarray
+    feature_importance: np.ndarray
+    positive_score: float
+    negative_score: float
+    target_label: Any
+    rival_label: Any
+    exactness_residual: float
+    details: Dict[str, Any]
+    time_mode: str = "native"
+    temporal_resampling: bool = False
+    temporal_pooling: bool = False
+
+
 def _as_dynamic_matrix(name: str, X: np.ndarray | Sequence[Sequence[float]]) -> np.ndarray:
     arr = np.asarray(X, dtype=float)
     if arr.ndim != 2:
@@ -52,6 +72,41 @@ def _as_dynamic_matrix(name: str, X: np.ndarray | Sequence[Sequence[float]]) -> 
     if not np.all(np.isfinite(arr)):
         raise ValueError(f"{name} contains NaN or inf")
     return arr
+
+
+def _as_feature_vector(name: str, x: np.ndarray | Sequence[float], n_features: Optional[int] = None) -> np.ndarray:
+    arr = np.asarray(x, dtype=float)
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be a 1D feature vector, got shape={arr.shape}")
+    if arr.shape[0] == 0:
+        raise ValueError(f"{name} must contain at least one feature")
+    if n_features is not None and arr.shape[0] != int(n_features):
+        raise ValueError(f"{name} feature dimension mismatch: expected {int(n_features)}, got {arr.shape[0]}")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} contains NaN or inf")
+    return arr
+
+
+def _validate_timestamps(timestamps_sec: Optional[Sequence[float]], T: int) -> Optional[Tuple[float, ...]]:
+    if timestamps_sec is None:
+        return None
+    arr = np.asarray(timestamps_sec, dtype=float)
+    if arr.ndim != 1:
+        raise ValueError(f"timestamps_sec must be a 1D sequence, got shape={arr.shape}")
+    if arr.shape[0] != int(T):
+        raise ValueError(f"timestamps_sec length mismatch: expected {int(T)}, got {arr.shape[0]}")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("timestamps_sec contains NaN or inf")
+    return tuple(float(value) for value in arr.tolist())
+
+
+def _validate_feature_names(feature_names: Optional[Sequence[str]], F: int) -> Optional[Tuple[str, ...]]:
+    if feature_names is None:
+        return None
+    names = tuple(str(name) for name in feature_names)
+    if len(names) != int(F):
+        raise ValueError(f"feature_names length mismatch: expected {int(F)}, got {len(names)}")
+    return names
 
 
 def _check_same_dynamic_shape(*arrays: np.ndarray) -> None:
@@ -101,6 +156,24 @@ def _regularized_matrix_norm(values: np.ndarray, eps: float) -> float:
 
 def _regularized_matrix_cosine(a: np.ndarray, b: np.ndarray, eps: float) -> float:
     return float(np.sum(a * b) / (_regularized_matrix_norm(a, eps) * _regularized_matrix_norm(b, eps)))
+
+
+def _native_cos_parts(
+    X_arr: np.ndarray,
+    target_arr: np.ndarray,
+    rival_arr: np.ndarray,
+    anchor_arr: np.ndarray,
+    eps_value: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    z = X_arr - anchor_arr
+    q_target = target_arr - anchor_arr
+    q_rival = rival_arr - anchor_arr
+    z_norm = np.linalg.norm(z, axis=1, keepdims=True)
+    target_norm = float(np.linalg.norm(q_target))
+    rival_norm = float(np.linalg.norm(q_rival))
+    target_part = (z * q_target) / ((z_norm + eps_value) * (target_norm + eps_value))
+    rival_part = (z * q_rival) / ((z_norm + eps_value) * (rival_norm + eps_value))
+    return target_part, rival_part
 
 
 def _labels_unique(labels: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -169,7 +242,7 @@ def prepare_dynamic_fpde_context(
     alignment: str = "linear",
     baseline: str = "mean",
 ) -> DynamicFPDEContext:
-    """Build class-mean temporal prototypes for Dynamic-FPDE."""
+    """Build class-mean temporal prototypes for the legacy resampled-time variant."""
     if alignment != "linear":
         raise NotImplementedError("only alignment='linear' is supported")
     if baseline not in ("mean", "zero"):
@@ -213,6 +286,10 @@ def prepare_dynamic_fpde_context(
         zero_anchor=zero_anchor,
         alignment=alignment,
         details={
+            "time_mode": "resampled",
+            "temporal_resampling": True,
+            "temporal_pooling": False,
+            "prototype_kind": "temporal_prototype",
             "baseline": baseline,
             "n_train_samples": len(X_items),
             "train_lengths": tuple(int(sample.shape[0]) for sample in matrices),
@@ -306,6 +383,295 @@ def dynamic_hyb_fpde(
     )
 
 
+def native_dynamic_diff_fpde(
+    X: np.ndarray | Sequence[Sequence[float]],
+    p_target: np.ndarray | Sequence[float],
+    p_rival: np.ndarray | Sequence[float],
+) -> Tuple[np.ndarray, float]:
+    """Compute native-time Dynamic-Diff-FPDE with feature-vector prototypes."""
+    X_arr = _as_dynamic_matrix("X", X)
+    target_arr = _as_feature_vector("p_target", p_target, X_arr.shape[1])
+    rival_arr = _as_feature_vector("p_rival", p_rival, X_arr.shape[1])
+
+    attr = (X_arr - rival_arr) ** 2 - (X_arr - target_arr) ** 2
+    return attr, float(np.sum(attr))
+
+
+def native_dynamic_cos_fpde(
+    X: np.ndarray | Sequence[Sequence[float]],
+    p_target: np.ndarray | Sequence[float],
+    p_rival: np.ndarray | Sequence[float],
+    *,
+    anchor: Optional[np.ndarray | Sequence[float]] = None,
+    eps: float = 1e-12,
+) -> Tuple[np.ndarray, float]:
+    """Compute native-time Dynamic-Cos-FPDE with per-frame input norms."""
+    eps_value = _validate_eps(eps)
+    X_arr = _as_dynamic_matrix("X", X)
+    target_arr = _as_feature_vector("p_target", p_target, X_arr.shape[1])
+    rival_arr = _as_feature_vector("p_rival", p_rival, X_arr.shape[1])
+    if anchor is None:
+        anchor_arr = np.zeros(X_arr.shape[1], dtype=float)
+    else:
+        anchor_arr = _as_feature_vector("anchor", anchor, X_arr.shape[1])
+
+    target_part, rival_part = _native_cos_parts(X_arr, target_arr, rival_arr, anchor_arr, eps_value)
+    attr = target_part - rival_part
+    return attr, float(np.sum(attr))
+
+
+def native_dynamic_hyb_fpde(
+    X: np.ndarray | Sequence[Sequence[float]],
+    p_target: np.ndarray | Sequence[float],
+    p_rival: np.ndarray | Sequence[float],
+    *,
+    lambda_hyb: float = 0.5,
+    normalize: str = "none",
+    anchor: Optional[np.ndarray | Sequence[float]] = None,
+    eps: float = 1e-12,
+) -> Tuple[np.ndarray, float, Dict[str, Any]]:
+    """Mix native-time Dynamic-Diff and Dynamic-Cos attribution matrices."""
+    eps_value = _validate_eps(eps)
+    lambda_value = _validate_lambda_hyb(lambda_hyb)
+    if normalize not in ("l1", "none"):
+        raise ValueError("normalize must be either 'l1' or 'none'")
+
+    diff_attr, diff_evidence = native_dynamic_diff_fpde(X, p_target, p_rival)
+    cos_attr, cos_evidence = native_dynamic_cos_fpde(X, p_target, p_rival, anchor=anchor, eps=eps_value)
+    if normalize == "l1":
+        diff_part, diff_scale = _l1_normalized(diff_attr, eps_value)
+        cos_part, cos_scale = _l1_normalized(cos_attr, eps_value)
+    else:
+        diff_part, cos_part = diff_attr, cos_attr
+        diff_scale = cos_scale = 1.0
+
+    attr = lambda_value * diff_part + (1.0 - lambda_value) * cos_part
+    evidence = float(np.sum(attr))
+    return (
+        attr,
+        evidence,
+        {
+            "diff_evidence": float(diff_evidence),
+            "cos_evidence": float(cos_evidence),
+            "lambda_hyb": float(lambda_value),
+            "normalize": normalize,
+            "diff_scale": float(diff_scale),
+            "cos_scale": float(cos_scale),
+            "time_mode": "native",
+            "temporal_resampling": False,
+            "temporal_pooling": False,
+            "prototype_kind": "feature_vector",
+        },
+    )
+
+
+def _native_diff_scores(X_arr: np.ndarray, target_arr: np.ndarray, rival_arr: np.ndarray) -> Tuple[float, float]:
+    positive_score = -float(np.sum((X_arr - target_arr) ** 2))
+    negative_score = -float(np.sum((X_arr - rival_arr) ** 2))
+    return positive_score, negative_score
+
+
+def _native_cos_scores(
+    X_arr: np.ndarray,
+    target_arr: np.ndarray,
+    rival_arr: np.ndarray,
+    anchor_arr: np.ndarray,
+    eps_value: float,
+) -> Tuple[float, float]:
+    target_part, rival_part = _native_cos_parts(X_arr, target_arr, rival_arr, anchor_arr, eps_value)
+    return float(np.sum(target_part)), float(np.sum(rival_part))
+
+
+def native_dynamic_fpde_explain_one(
+    X: np.ndarray | Sequence[Sequence[float]],
+    *,
+    p_target: np.ndarray | Sequence[float],
+    p_rival: np.ndarray | Sequence[float],
+    target_label: Any = None,
+    rival_label: Any = None,
+    mode: str = "dynamic_hyb",
+    lambda_hyb: float = 0.5,
+    normalize: str = "none",
+    anchor: Optional[np.ndarray | Sequence[float]] = None,
+    feature_names: Optional[Sequence[str]] = None,
+    timestamps_sec: Optional[Sequence[float]] = None,
+    eps: float = 1e-12,
+    details: Optional[Dict[str, Any]] = None,
+) -> NativeTimeDynamicFPDEExplanation:
+    """Explain one sequence with native-time Dynamic-FPDE.
+
+    This API preserves the input frame axis exactly and uses feature-vector
+    prototypes with shape ``(F,)``.
+    """
+    eps_value = _validate_eps(eps)
+    X_arr = _as_dynamic_matrix("X", X)
+    target_arr = _as_feature_vector("p_target", p_target, X_arr.shape[1])
+    rival_arr = _as_feature_vector("p_rival", p_rival, X_arr.shape[1])
+    if anchor is None:
+        anchor_arr = np.zeros(X_arr.shape[1], dtype=float)
+    else:
+        anchor_arr = _as_feature_vector("anchor", anchor, X_arr.shape[1])
+    feature_names_value = _validate_feature_names(feature_names, X_arr.shape[1])
+    timestamps_value = _validate_timestamps(timestamps_sec, X_arr.shape[0])
+    if mode not in ("dynamic_diff", "dynamic_cos", "dynamic_hyb"):
+        raise ValueError("mode must be 'dynamic_diff', 'dynamic_cos', or 'dynamic_hyb'")
+
+    diff_positive_score, diff_negative_score = _native_diff_scores(X_arr, target_arr, rival_arr)
+    cos_positive_score, cos_negative_score = _native_cos_scores(X_arr, target_arr, rival_arr, anchor_arr, eps_value)
+
+    base_details: Dict[str, Any] = {} if details is None else dict(details)
+    base_details.update(
+        {
+            "time_mode": "native",
+            "temporal_resampling": False,
+            "temporal_pooling": False,
+            "prototype_kind": "feature_vector",
+            "input_shape": tuple(X_arr.shape),
+            "output_shape": tuple(X_arr.shape),
+            "feature_names": feature_names_value,
+            "timestamps_sec": timestamps_value,
+            "eps": float(eps_value),
+            "normalize": normalize,
+            "lambda_hyb": float(lambda_hyb) if mode == "dynamic_hyb" else None,
+        }
+    )
+
+    if mode == "dynamic_diff":
+        attributions, evidence = native_dynamic_diff_fpde(X_arr, target_arr, rival_arr)
+        positive_score = diff_positive_score
+        negative_score = diff_negative_score
+    elif mode == "dynamic_cos":
+        attributions, evidence = native_dynamic_cos_fpde(X_arr, target_arr, rival_arr, anchor=anchor_arr, eps=eps_value)
+        positive_score = cos_positive_score
+        negative_score = cos_negative_score
+    else:
+        lambda_value = _validate_lambda_hyb(lambda_hyb)
+        attributions, evidence, hyb_details = native_dynamic_hyb_fpde(
+            X_arr,
+            target_arr,
+            rival_arr,
+            lambda_hyb=lambda_value,
+            normalize=normalize,
+            anchor=anchor_arr,
+            eps=eps_value,
+        )
+        base_details.update(hyb_details)
+        if normalize == "none":
+            positive_score = lambda_value * diff_positive_score + (1.0 - lambda_value) * cos_positive_score
+            negative_score = lambda_value * diff_negative_score + (1.0 - lambda_value) * cos_negative_score
+            base_details["hyb_score_definition"] = "raw weighted native Diff/Cos positive and negative scores"
+        elif normalize == "l1":
+            diff_scale = float(hyb_details["diff_scale"])
+            cos_scale = float(hyb_details["cos_scale"])
+            positive_score = lambda_value * _scale_value(diff_positive_score, diff_scale)
+            positive_score += (1.0 - lambda_value) * _scale_value(cos_positive_score, cos_scale)
+            negative_score = lambda_value * _scale_value(diff_negative_score, diff_scale)
+            negative_score += (1.0 - lambda_value) * _scale_value(cos_negative_score, cos_scale)
+            base_details["hyb_score_definition"] = "weighted native Diff/Cos scores divided by full-matrix L1 scales"
+        else:
+            raise ValueError("normalize must be either 'l1' or 'none'")
+        base_details["hyb_positive_score"] = float(positive_score)
+        base_details["hyb_negative_score"] = float(negative_score)
+
+    base_details["output_shape"] = tuple(attributions.shape)
+    time_importance = np.sum(attributions, axis=1)
+    feature_importance = np.sum(attributions, axis=0)
+    residual = float(evidence - np.sum(attributions))
+    return NativeTimeDynamicFPDEExplanation(
+        mode=mode,
+        evidence=float(evidence),
+        attributions=attributions.astype(float, copy=True),
+        time_importance=time_importance.astype(float, copy=True),
+        feature_importance=feature_importance.astype(float, copy=True),
+        positive_score=float(positive_score),
+        negative_score=float(negative_score),
+        target_label=target_label,
+        rival_label=rival_label,
+        exactness_residual=residual,
+        details=base_details,
+    )
+
+
+def _resolve_native_feature_vectors(
+    name: str,
+    values: np.ndarray | Sequence[Any],
+    n_samples: int,
+    n_features: int,
+) -> list[np.ndarray]:
+    try:
+        arr = np.asarray(values, dtype=float)
+    except (TypeError, ValueError):
+        arr = None
+    if arr is not None:
+        if arr.ndim == 1:
+            vector = _as_feature_vector(name, arr, n_features)
+            return [vector] * int(n_samples)
+        if arr.ndim == 2:
+            if arr.shape[0] != int(n_samples):
+                raise ValueError(f"{name} must have one vector per sample or a single broadcast vector")
+            return [_as_feature_vector(f"{name}[{i}]", arr[i], n_features) for i in range(int(n_samples))]
+
+    items = list(values)
+    if len(items) != int(n_samples):
+        raise ValueError(f"{name} must have one vector per sample or a single broadcast vector")
+    return [_as_feature_vector(f"{name}[{i}]", item, n_features) for i, item in enumerate(items)]
+
+
+def native_dynamic_fpde_explain_batch(
+    X_list: Sequence[np.ndarray | Sequence[Sequence[float]]],
+    *,
+    p_targets: np.ndarray | Sequence[Any],
+    p_rivals: np.ndarray | Sequence[Any],
+    target_labels: Optional[Sequence[Any]] = None,
+    rival_labels: Optional[Sequence[Any]] = None,
+    mode: str = "dynamic_hyb",
+    lambda_hyb: float = 0.5,
+    normalize: str = "none",
+    anchor: Optional[np.ndarray | Sequence[float]] = None,
+    feature_names: Optional[Sequence[str]] = None,
+    timestamps_list: Optional[Sequence[Optional[Sequence[float]]]] = None,
+    eps: float = 1e-12,
+) -> list[NativeTimeDynamicFPDEExplanation]:
+    """Explain variable-length sequences without padding or resampling."""
+    X_items = [_as_dynamic_matrix(f"X_list[{i}]", sample) for i, sample in enumerate(list(X_list))]
+    if len(X_items) == 0:
+        raise ValueError("X_list must contain at least one sample")
+    n_features = int(X_items[0].shape[1])
+    for i, sample in enumerate(X_items):
+        if sample.shape[1] != n_features:
+            raise ValueError(f"inconsistent feature dimension at X_list[{i}]: expected {n_features}, got {sample.shape[1]}")
+
+    targets = _resolve_native_feature_vectors("p_targets", p_targets, len(X_items), n_features)
+    rivals = _resolve_native_feature_vectors("p_rivals", p_rivals, len(X_items), n_features)
+    target_label_items = [None] * len(X_items) if target_labels is None else list(target_labels)
+    rival_label_items = [None] * len(X_items) if rival_labels is None else list(rival_labels)
+    timestamp_items = [None] * len(X_items) if timestamps_list is None else list(timestamps_list)
+    if len(target_label_items) != len(X_items):
+        raise ValueError(f"number of samples and target_labels differ: {len(X_items)} vs {len(target_label_items)}")
+    if len(rival_label_items) != len(X_items):
+        raise ValueError(f"number of samples and rival_labels differ: {len(X_items)} vs {len(rival_label_items)}")
+    if len(timestamp_items) != len(X_items):
+        raise ValueError(f"number of samples and timestamps_list differ: {len(X_items)} vs {len(timestamp_items)}")
+
+    return [
+        native_dynamic_fpde_explain_one(
+            sample,
+            p_target=targets[i],
+            p_rival=rivals[i],
+            target_label=target_label_items[i],
+            rival_label=rival_label_items[i],
+            mode=mode,
+            lambda_hyb=lambda_hyb,
+            normalize=normalize,
+            anchor=anchor,
+            feature_names=feature_names,
+            timestamps_sec=timestamp_items[i],
+            eps=eps,
+        )
+        for i, sample in enumerate(X_items)
+    ]
+
+
 def dynamic_fpde_explain_one(
     X: np.ndarray | Sequence[Sequence[float]],
     context: DynamicFPDEContext,
@@ -318,7 +684,7 @@ def dynamic_fpde_explain_one(
     anchor_strategy: str = "mean",
     eps: float = 1e-12,
 ) -> DynamicFPDEExplanation:
-    """Explain one variable-length sequence with Dynamic-FPDE."""
+    """Explain one sequence with the legacy resampled-time Dynamic-FPDE API."""
     X_arr = _as_dynamic_matrix("X", X)
     ctx = _validate_dynamic_context(context)
     if X_arr.shape[1] != ctx.n_features:
@@ -362,6 +728,12 @@ def dynamic_fpde_explain_one(
     cos_negative_score = _regularized_matrix_cosine(z, q_rival, _validate_eps(eps))
 
     details: Dict[str, Any] = {
+        "time_mode": "resampled",
+        "temporal_resampling": True,
+        "temporal_pooling": False,
+        "prototype_kind": "temporal_prototype",
+        "input_shape": tuple(X_arr.shape),
+        "output_shape": tuple(X_arr.shape),
         "target_prototype_index": int(target_idx),
         "rival_prototype_index": int(rival_idx),
         "anchor_strategy": anchor_strategy,
@@ -443,7 +815,7 @@ def dynamic_fpde_explain_batch(
     anchor_strategy: str = "mean",
     eps: float = 1e-12,
 ) -> list[DynamicFPDEExplanation]:
-    """Explain a batch of variable-length sequences."""
+    """Explain a batch with the legacy resampled-time Dynamic-FPDE API."""
     X_items = list(X_list)
     targets = list(target_labels)
     if len(X_items) != len(targets):
@@ -689,7 +1061,7 @@ def _axes(ax: Optional[Any], *, figsize: Tuple[float, float]) -> Any:
 
 
 def plot_dynamic_time_importance(
-    explanation: DynamicFPDEExplanation,
+    explanation: DynamicFPDEExplanation | NativeTimeDynamicFPDEExplanation,
     *,
     ax: Optional[Any] = None,
     title: Optional[str] = None,
@@ -697,8 +1069,8 @@ def plot_dynamic_time_importance(
     negative_color: str = "#dc2626",
 ) -> Any:
     """Plot signed frame-level importance for a Dynamic-FPDE explanation."""
-    if not isinstance(explanation, DynamicFPDEExplanation):
-        raise TypeError("explanation must be a DynamicFPDEExplanation")
+    if not isinstance(explanation, (DynamicFPDEExplanation, NativeTimeDynamicFPDEExplanation)):
+        raise TypeError("explanation must be a DynamicFPDEExplanation or NativeTimeDynamicFPDEExplanation")
     values = _as_dynamic_matrix("attributions", explanation.attributions)
     time_importance = np.sum(values, axis=1)
     colors = [positive_color if value >= 0.0 else negative_color for value in time_importance]
@@ -713,7 +1085,7 @@ def plot_dynamic_time_importance(
 
 
 def plot_dynamic_attribution_heatmap(
-    explanation: DynamicFPDEExplanation,
+    explanation: DynamicFPDEExplanation | NativeTimeDynamicFPDEExplanation,
     *,
     ax: Optional[Any] = None,
     title: Optional[str] = None,
@@ -722,8 +1094,8 @@ def plot_dynamic_attribution_heatmap(
     symmetric: bool = True,
 ) -> Any:
     """Plot a Dynamic-FPDE ``(T, F)`` attribution matrix as a heatmap."""
-    if not isinstance(explanation, DynamicFPDEExplanation):
-        raise TypeError("explanation must be a DynamicFPDEExplanation")
+    if not isinstance(explanation, (DynamicFPDEExplanation, NativeTimeDynamicFPDEExplanation)):
+        raise TypeError("explanation must be a DynamicFPDEExplanation or NativeTimeDynamicFPDEExplanation")
     values = _as_dynamic_matrix("attributions", explanation.attributions)
     if symmetric:
         vmax = float(np.max(np.abs(values)))
@@ -745,11 +1117,17 @@ def plot_dynamic_attribution_heatmap(
 __all__ = [
     "DynamicFPDEContext",
     "DynamicFPDEExplanation",
+    "NativeTimeDynamicFPDEExplanation",
     "resample_time_series_linear",
     "prepare_dynamic_fpde_context",
     "dynamic_diff_fpde",
     "dynamic_cos_fpde",
     "dynamic_hyb_fpde",
+    "native_dynamic_diff_fpde",
+    "native_dynamic_cos_fpde",
+    "native_dynamic_hyb_fpde",
+    "native_dynamic_fpde_explain_one",
+    "native_dynamic_fpde_explain_batch",
     "dynamic_fpde_explain_one",
     "dynamic_fpde_explain_batch",
     "temporal_deletion_insertion_curves",
