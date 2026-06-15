@@ -206,8 +206,12 @@ def dynamic_hyb_fpde_gpu(
         cos_part, cos_scale = _l1_normalized(cos_attr, cp, eps_value)
     else:
         diff_part, cos_part = diff_attr, cos_attr
-        diff_scale = cp.asarray(1.0, dtype=float)
-        cos_scale = cp.asarray(1.0, dtype=float)
+        if X_arr.ndim == 2:
+            diff_scale = cp.asarray(1.0, dtype=float)
+            cos_scale = cp.asarray(1.0, dtype=float)
+        else:
+            diff_scale = cp.ones((X_arr.shape[0],), dtype=float)
+            cos_scale = cp.ones((X_arr.shape[0],), dtype=float)
 
     attr = lambda_value * diff_part + (1.0 - lambda_value) * cos_part
     evidence = _sum_dynamic(attr, cp)

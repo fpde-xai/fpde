@@ -6,6 +6,9 @@ import pytest
 from fpde import dynamic_cos_fpde, dynamic_diff_fpde, dynamic_hyb_fpde
 from fpde.dynamic_cuda import dynamic_cos_fpde_gpu, dynamic_diff_fpde_gpu, dynamic_hyb_fpde_gpu
 
+RTOL = 1e-8
+ATOL = 1e-10
+
 
 def _cupy_or_skip():
     cp = pytest.importorskip("cupy")
@@ -41,8 +44,8 @@ def test_dynamic_diff_gpu_matches_cpu_for_matrix_and_batch():
     cpu_attr, cpu_evidence = dynamic_diff_fpde(X, target, rival)
     gpu_attr, gpu_evidence = dynamic_diff_fpde_gpu(X, target, rival)
 
-    np.testing.assert_allclose(gpu_attr, cpu_attr)
-    assert gpu_evidence == pytest.approx(cpu_evidence)
+    np.testing.assert_allclose(gpu_attr, cpu_attr, rtol=RTOL, atol=ATOL)
+    assert gpu_evidence == pytest.approx(cpu_evidence, rel=RTOL, abs=ATOL)
 
     X_batch, target_batch, rival_batch, _ = _batched_inputs()
     gpu_batch_attr, gpu_batch_evidence = dynamic_diff_fpde_gpu(X_batch, target_batch, rival_batch)
@@ -53,8 +56,8 @@ def test_dynamic_diff_gpu_matches_cpu_for_matrix_and_batch():
         attr, evidence = dynamic_diff_fpde(X_batch[i], target_batch[i], rival_batch[i])
         expected_attr.append(attr)
         expected_evidence.append(evidence)
-    np.testing.assert_allclose(gpu_batch_attr, np.stack(expected_attr, axis=0))
-    np.testing.assert_allclose(gpu_batch_evidence, np.asarray(expected_evidence, dtype=float))
+    np.testing.assert_allclose(gpu_batch_attr, np.stack(expected_attr, axis=0), rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(gpu_batch_evidence, np.asarray(expected_evidence, dtype=float), rtol=RTOL, atol=ATOL)
 
 
 def test_dynamic_cos_gpu_matches_cpu_for_matrix_and_batch():
@@ -64,8 +67,8 @@ def test_dynamic_cos_gpu_matches_cpu_for_matrix_and_batch():
     cpu_attr, cpu_evidence = dynamic_cos_fpde(X, target, rival, anchor=anchor)
     gpu_attr, gpu_evidence = dynamic_cos_fpde_gpu(X, target, rival, anchor=anchor)
 
-    np.testing.assert_allclose(gpu_attr, cpu_attr)
-    assert gpu_evidence == pytest.approx(cpu_evidence)
+    np.testing.assert_allclose(gpu_attr, cpu_attr, rtol=RTOL, atol=ATOL)
+    assert gpu_evidence == pytest.approx(cpu_evidence, rel=RTOL, abs=ATOL)
 
     X_batch, target_batch, rival_batch, anchor_batch = _batched_inputs()
     gpu_batch_attr, gpu_batch_evidence = dynamic_cos_fpde_gpu(
@@ -81,8 +84,8 @@ def test_dynamic_cos_gpu_matches_cpu_for_matrix_and_batch():
         attr, evidence = dynamic_cos_fpde(X_batch[i], target_batch[i], rival_batch[i], anchor=anchor_batch[i])
         expected_attr.append(attr)
         expected_evidence.append(evidence)
-    np.testing.assert_allclose(gpu_batch_attr, np.stack(expected_attr, axis=0))
-    np.testing.assert_allclose(gpu_batch_evidence, np.asarray(expected_evidence, dtype=float))
+    np.testing.assert_allclose(gpu_batch_attr, np.stack(expected_attr, axis=0), rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(gpu_batch_evidence, np.asarray(expected_evidence, dtype=float), rtol=RTOL, atol=ATOL)
 
 
 def test_dynamic_hyb_gpu_matches_cpu_for_matrix_and_batch():
@@ -104,10 +107,10 @@ def test_dynamic_hyb_gpu_matches_cpu_for_matrix_and_batch():
         anchor=anchor,
     )
 
-    np.testing.assert_allclose(gpu_attr, cpu_attr)
-    assert gpu_evidence == pytest.approx(cpu_evidence)
-    assert gpu_details["diff_scale"] == pytest.approx(cpu_details["diff_scale"])
-    assert gpu_details["cos_scale"] == pytest.approx(cpu_details["cos_scale"])
+    np.testing.assert_allclose(gpu_attr, cpu_attr, rtol=RTOL, atol=ATOL)
+    assert gpu_evidence == pytest.approx(cpu_evidence, rel=RTOL, abs=ATOL)
+    assert gpu_details["diff_scale"] == pytest.approx(cpu_details["diff_scale"], rel=RTOL, abs=ATOL)
+    assert gpu_details["cos_scale"] == pytest.approx(cpu_details["cos_scale"], rel=RTOL, abs=ATOL)
 
     X_batch, target_batch, rival_batch, anchor_batch = _batched_inputs()
     gpu_batch_attr, gpu_batch_evidence, gpu_batch_details = dynamic_hyb_fpde_gpu(
@@ -134,10 +137,20 @@ def test_dynamic_hyb_gpu_matches_cpu_for_matrix_and_batch():
         expected_evidence.append(evidence)
         expected_diff_scale.append(details["diff_scale"])
         expected_cos_scale.append(details["cos_scale"])
-    np.testing.assert_allclose(gpu_batch_attr, np.stack(expected_attr, axis=0))
-    np.testing.assert_allclose(gpu_batch_evidence, np.asarray(expected_evidence, dtype=float))
-    np.testing.assert_allclose(gpu_batch_details["diff_scale"], np.asarray(expected_diff_scale, dtype=float))
-    np.testing.assert_allclose(gpu_batch_details["cos_scale"], np.asarray(expected_cos_scale, dtype=float))
+    np.testing.assert_allclose(gpu_batch_attr, np.stack(expected_attr, axis=0), rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(gpu_batch_evidence, np.asarray(expected_evidence, dtype=float), rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(
+        gpu_batch_details["diff_scale"],
+        np.asarray(expected_diff_scale, dtype=float),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    np.testing.assert_allclose(
+        gpu_batch_details["cos_scale"],
+        np.asarray(expected_cos_scale, dtype=float),
+        rtol=RTOL,
+        atol=ATOL,
+    )
 
 
 def test_dynamic_hyb_gpu_matches_cpu_without_normalization_and_broadcasts_prototypes():
@@ -145,7 +158,7 @@ def test_dynamic_hyb_gpu_matches_cpu_without_normalization_and_broadcasts_protot
     X, target, rival, anchor = _sample_inputs()
     X_batch = np.stack([X, X + 0.5], axis=0)
 
-    gpu_attr, gpu_evidence, _ = dynamic_hyb_fpde_gpu(
+    gpu_attr, gpu_evidence, gpu_details = dynamic_hyb_fpde_gpu(
         X_batch,
         target,
         rival,
@@ -167,8 +180,10 @@ def test_dynamic_hyb_gpu_matches_cpu_without_normalization_and_broadcasts_protot
         )
         expected_attr.append(attr)
         expected_evidence.append(evidence)
-    np.testing.assert_allclose(gpu_attr, np.stack(expected_attr, axis=0))
-    np.testing.assert_allclose(gpu_evidence, np.asarray(expected_evidence, dtype=float))
+    np.testing.assert_allclose(gpu_attr, np.stack(expected_attr, axis=0), rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(gpu_evidence, np.asarray(expected_evidence, dtype=float), rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(gpu_details["diff_scale"], np.ones((X_batch.shape[0],), dtype=float), rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(gpu_details["cos_scale"], np.ones((X_batch.shape[0],), dtype=float), rtol=RTOL, atol=ATOL)
 
 
 def test_dynamic_cuda_rejects_invalid_shape_nan_inf_and_lambda():
