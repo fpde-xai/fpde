@@ -116,6 +116,27 @@ def test_explain_one_shapes_and_scores():
     assert abs(explanation.exactness_residual) < 1e-12
 
 
+def test_dynamic_hyb_scores_are_finite():
+    context = _context()
+    X = np.array([[0.05, 0.0], [0.25, 0.1], [0.45, 0.1], [0.55, 0.2]], dtype=float)
+
+    for normalize in ("none", "l1"):
+        explanation = dynamic_fpde_explain_one(
+            X,
+            context,
+            target_label="a",
+            rival_label="b",
+            mode="dynamic_hyb",
+            lambda_hyb=0.25,
+            normalize=normalize,
+        )
+
+        assert np.isfinite(explanation.positive_score)
+        assert np.isfinite(explanation.negative_score)
+        assert explanation.details["hyb_positive_score"] == pytest.approx(explanation.positive_score)
+        assert explanation.details["hyb_negative_score"] == pytest.approx(explanation.negative_score)
+
+
 def test_automatic_rival_selection_uses_non_target_label():
     context = _context()
     X = np.array([[0.05, 0.0], [0.25, 0.1], [0.45, 0.1], [0.55, 0.2]], dtype=float)
@@ -174,7 +195,19 @@ def test_numerical_stability_for_constant_and_zero_arrays():
         assert np.isfinite(hyb_evidence)
 
 
-def test_temporal_deletion_insertion_curves_and_lambda_selection():
+def _prototype_for_label(context, label, length):
+    idx = int(np.where(context.prototype_labels == label)[0][0])
+    return resample_time_series_linear(context.prototypes[idx], length)
+
+
+def _manual_diff_evidence(context, X, target_label, rival_label):
+    target = _prototype_for_label(context, target_label, X.shape[0])
+    rival = _prototype_for_label(context, rival_label, X.shape[0])
+    _, evidence = dynamic_diff_fpde(X, target, rival)
+    return evidence
+
+
+def test_temporal_deletion_insertion_curves_return_normalized_metrics():
     context = _context()
     X = _training_sequences()[0]
     explanation = dynamic_fpde_explain_one(X, context, target_label="a", rival_label="b")
@@ -188,10 +221,106 @@ def test_temporal_deletion_insertion_curves_and_lambda_selection():
         steps=3,
     )
 
-    assert set(curves) >= {"deletion_curve", "insertion_curve", "deletion_drop_auc", "insertion_auc", "combined_score"}
+    assert set(curves) >= {
+        "deletion_curve",
+        "insertion_curve",
+        "deletion_drop_curve",
+        "insertion_gain_curve",
+        "deletion_drop_auc",
+        "insertion_gain_auc",
+        "insertion_auc",
+        "combined_score",
+    }
     assert len(curves["deletion_curve"]) == len(curves["insertion_curve"])
+    assert len(curves["deletion_drop_curve"]) == len(curves["deletion_curve"])
+    assert len(curves["insertion_gain_curve"]) == len(curves["insertion_curve"])
+    scale = abs(curves["original_evidence"] - curves["baseline_evidence"]) + 1e-12
+    np.testing.assert_allclose(
+        curves["deletion_drop_curve"],
+        (curves["original_evidence"] - np.asarray(curves["deletion_curve"])) / scale,
+    )
+    np.testing.assert_allclose(
+        curves["insertion_gain_curve"],
+        (np.asarray(curves["insertion_curve"]) - curves["insertion_curve"][0]) / scale,
+    )
+    assert curves["insertion_auc"] == pytest.approx(curves["insertion_gain_auc"])
     assert np.isfinite(curves["combined_score"])
 
+
+def test_temporal_deletion_insertion_rank_by_modes():
+    context = _context()
+    X = _training_sequences()[0]
+    explanation = DynamicFPDEExplanation(
+        mode="dynamic_hyb",
+        evidence=0.0,
+        attributions=np.zeros_like(X, dtype=float),
+        time_importance=np.array([0.0, -10.0, 1.0], dtype=float),
+        feature_importance=np.zeros(X.shape[1], dtype=float),
+        positive_score=0.0,
+        negative_score=0.0,
+        target_label="a",
+        rival_label="b",
+        exactness_residual=0.0,
+        details={},
+    )
+    baseline = resample_time_series_linear(context.mean_anchor, X.shape[0])
+
+    for rank_by, expected_first_idx in (("positive", 2), ("signed", 2), ("absolute", 1)):
+        curves = temporal_deletion_insertion_curves(
+            X,
+            explanation,
+            context,
+            target_label="a",
+            rival_label="b",
+            steps=3,
+            rank_by=rank_by,
+        )
+        deletion = X.copy()
+        deletion[expected_first_idx] = baseline[expected_first_idx]
+        assert curves["deletion_curve"][1] == pytest.approx(_manual_diff_evidence(context, deletion, "a", "b"))
+        assert curves["rank_by"] == rank_by
+
+    with pytest.raises(ValueError, match="rank_by"):
+        temporal_deletion_insertion_curves(
+            X,
+            explanation,
+            context,
+            target_label="a",
+            rival_label="b",
+            rank_by="unknown",
+        )
+
+
+def test_select_dynamic_lambda_uses_normalized_combined_score():
+    context = _context()
+    X_val = _training_sequences()[:2]
+    y_val = ["a", "a"]
+
+    selection = select_dynamic_lambda(X_val, y_val, context, lambda_grid=[0.5], steps=3)
+
+    manual_scores = []
+    for X, y in zip(X_val, y_val):
+        explanation = dynamic_fpde_explain_one(X, context, target_label=y, lambda_hyb=0.5)
+        curves = temporal_deletion_insertion_curves(
+            X,
+            explanation,
+            context,
+            target_label=y,
+            rival_label=explanation.rival_label,
+            steps=3,
+        )
+        manual_scores.append(curves["combined_score"])
+
+    assert selection["rows"][0]["metric_source"] == "normalized_prototype_evidence_curves"
+    assert selection["rows"][0]["score"] == pytest.approx(float(np.mean(manual_scores)))
+    assert selection["rows"][0]["mean_insertion_gain_auc"] == pytest.approx(selection["rows"][0]["mean_insertion_auc"])
+    assert selection["metric_means"]["0.5"]["insertion_gain_auc"] == pytest.approx(
+        selection["metric_means"]["0.5"]["insertion_auc"]
+    )
+
+
+def test_temporal_deletion_insertion_curves_and_lambda_selection():
+    context = _context()
     selection = select_dynamic_lambda(_training_sequences()[:4], ["a", "a", "b", "b"], context, lambda_grid=[0.0, 0.5, 1.0], steps=3)
     assert selection["best_lambda"] in (0.0, 0.5, 1.0)
     assert len(selection["rows"]) == 3

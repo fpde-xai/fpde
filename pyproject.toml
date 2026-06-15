@@ -28,11 +28,13 @@ classifiers = [
 ]
 dependencies = [
   "numpy",
-  "scikit-learn",
-  "pytest"
+  "scikit-learn"
 ]
 
 [project.optional-dependencies]
+dev = [
+  "pytest"
+]
 plot = [
   "matplotlib"
 ]

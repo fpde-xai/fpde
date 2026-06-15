@@ -19,7 +19,8 @@ Phi shape = (T, F)
 `Phi[t, f]` is prototype evidence for frame `t` and feature `f`. Positive
 values support the target class prototype relative to the rival prototype.
 Negative values support the rival class prototype relative to the target
-prototype. The sign always depends on the chosen target/rival pair.
+prototype. The sign always depends on the chosen target/rival pair. Evidence
+scores are prototype-contrast scores, not probabilities.
 
 ## Dynamic-Diff
 
@@ -95,9 +96,42 @@ print(explanation.feature_importance)
 If `rival_label=None`, Dynamic-FPDE chooses the closest non-target prototype
 after resampling prototypes to the sample length.
 
+## Temporal Deletion And Insertion
+
+`temporal_deletion_insertion_curves` evaluates frame rankings with
+prototype-evidence curves. It does not evaluate class probabilities. Frames are
+ranked with `rank_by`:
+
+- `"positive"` ranks by `max(time_importance, 0)`, descending. This is the
+  default because the metric is intended to evaluate target-supporting frames.
+- `"signed"` ranks by signed `time_importance`, descending.
+- `"absolute"` ranks by `abs(time_importance)`, descending.
+
+The function computes raw Dynamic-Diff evidence curves, then normalizes them
+against the original-to-baseline evidence range:
+
+```text
+scale = abs(original_evidence - baseline_evidence) + eps
+
+deletion_drop_curve = (original_evidence - deletion_curve) / scale
+insertion_gain_curve = (insertion_curve - insertion_curve[0]) / scale
+```
+
+The reported `deletion_drop_auc`, `insertion_gain_auc`, and `combined_score`
+come from these normalized curves:
+
+```text
+combined_score = 0.5 * (deletion_drop_auc + insertion_gain_auc)
+```
+
+The returned `insertion_auc` key is retained as an alias for
+`insertion_gain_auc`; prefer `insertion_gain_auc` in new code.
+
 ## Limitations
 
 - Dynamic-FPDE is prototype evidence decomposition, not a causal explanation.
+- Deletion/insertion scores are normalized prototype evidence scores, not
+  probabilities.
 - Attribution signs depend on the target/rival prototype pair.
 - v0.1 uses linear temporal resampling only.
 - Inputs are frame-level feature matrices only.

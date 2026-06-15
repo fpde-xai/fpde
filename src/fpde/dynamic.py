@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -89,6 +89,10 @@ def _validate_lambda_hyb(lambda_hyb: float) -> float:
 def _l1_normalized(values: np.ndarray, eps: float) -> Tuple[np.ndarray, float]:
     scale = float(np.sum(np.abs(values)) + eps)
     return values / scale, scale
+
+
+def _scale_value(value: float, scale: float) -> float:
+    return float(value / scale) if scale > 0.0 else 0.0
 
 
 def _regularized_matrix_norm(values: np.ndarray, eps: float) -> float:
@@ -381,18 +385,33 @@ def dynamic_fpde_explain_one(
         positive_score = cos_positive_score
         negative_score = cos_negative_score
     else:
+        lambda_value = _validate_lambda_hyb(lambda_hyb)
         attributions, evidence, hyb_details = dynamic_hyb_fpde(
             X_arr,
             target_proto,
             rival_proto,
-            lambda_hyb=lambda_hyb,
+            lambda_hyb=lambda_value,
             normalize=normalize,
             anchor=anchor,
             eps=eps,
         )
-        positive_score = float("nan")
-        negative_score = float("nan")
         details.update(hyb_details)
+        if normalize == "none":
+            positive_score = lambda_value * diff_positive_score + (1.0 - lambda_value) * cos_positive_score
+            negative_score = lambda_value * diff_negative_score + (1.0 - lambda_value) * cos_negative_score
+            details["hyb_score_definition"] = "raw weighted Diff/Cos positive and negative scores"
+        elif normalize == "l1":
+            diff_scale = float(hyb_details["diff_scale"])
+            cos_scale = float(hyb_details["cos_scale"])
+            positive_score = lambda_value * _scale_value(diff_positive_score, diff_scale)
+            positive_score += (1.0 - lambda_value) * _scale_value(cos_positive_score, cos_scale)
+            negative_score = lambda_value * _scale_value(diff_negative_score, diff_scale)
+            negative_score += (1.0 - lambda_value) * _scale_value(cos_negative_score, cos_scale)
+            details["hyb_score_definition"] = "weighted Diff/Cos scores divided by each component attribution L1 scale"
+        else:
+            raise ValueError("normalize must be either 'l1' or 'none'")
+        details["hyb_positive_score"] = float(positive_score)
+        details["hyb_negative_score"] = float(negative_score)
 
     time_importance = np.sum(attributions, axis=1)
     feature_importance = np.sum(attributions, axis=0)
@@ -471,8 +490,11 @@ def temporal_deletion_insertion_curves(
     rival_label: Any,
     steps: int = 20,
     baseline_strategy: str = "mean",
+    rank_by: Literal["positive", "signed", "absolute"] = "positive",
+    eps: float = 1e-12,
 ) -> Dict[str, Any]:
-    """Compute prototype-driven temporal deletion and insertion curves."""
+    """Compute normalized prototype-evidence deletion and insertion curves."""
+    eps_value = _validate_eps(eps)
     X_arr = _as_dynamic_matrix("X", X)
     ctx = _validate_dynamic_context(context)
     if X_arr.shape[1] != ctx.n_features:
@@ -488,6 +510,8 @@ def temporal_deletion_insertion_curves(
         baseline = np.zeros_like(X_arr, dtype=float)
     else:
         raise ValueError("baseline_strategy must be 'mean', 'zero', or 'none'")
+    if rank_by not in ("positive", "signed", "absolute"):
+        raise ValueError("rank_by must be 'positive', 'signed', or 'absolute'")
 
     fractions = np.linspace(0.0, 1.0, min(step_count, X_arr.shape[0]) + 1)
     counts = np.unique(np.rint(fractions * X_arr.shape[0]).astype(np.intp))
@@ -496,10 +520,18 @@ def temporal_deletion_insertion_curves(
     if counts[-1] != X_arr.shape[0]:
         counts = np.concatenate([counts, [X_arr.shape[0]]])
     fractions = counts.astype(float) / float(X_arr.shape[0])
-    order = np.argsort(explanation.time_importance)[::-1]
+    if rank_by == "positive":
+        rank_scores = np.maximum(explanation.time_importance, 0.0)
+    elif rank_by == "signed":
+        rank_scores = explanation.time_importance
+    else:
+        rank_scores = np.abs(explanation.time_importance)
+    order = np.argsort(rank_scores)[::-1]
 
     deletion_curve = []
     insertion_curve = []
+    original_evidence = _dynamic_diff_evidence_for_labels(X_arr, ctx, target_label, rival_label)
+    baseline_evidence = _dynamic_diff_evidence_for_labels(baseline, ctx, target_label, rival_label)
     for count in counts:
         selected = order[: int(count)]
         deletion = X_arr.copy()
@@ -511,18 +543,26 @@ def temporal_deletion_insertion_curves(
 
     deletion_arr = np.asarray(deletion_curve, dtype=float)
     insertion_arr = np.asarray(insertion_curve, dtype=float)
-    deletion_auc = _safe_auc(fractions, deletion_arr)
-    insertion_auc = _safe_auc(fractions, insertion_arr)
-    deletion_drop_auc = float(deletion_arr[0] - deletion_auc)
-    combined_score = float(0.5 * (deletion_drop_auc + insertion_auc))
+    scale = float(abs(original_evidence - baseline_evidence) + eps_value)
+    deletion_drop_curve = (original_evidence - deletion_arr) / scale
+    insertion_gain_curve = (insertion_arr - insertion_arr[0]) / scale
+    deletion_drop_auc = _safe_auc(fractions, deletion_drop_curve)
+    insertion_gain_auc = _safe_auc(fractions, insertion_gain_curve)
+    combined_score = float(0.5 * (deletion_drop_auc + insertion_gain_auc))
     return {
         "fractions": fractions.tolist(),
         "deletion_curve": deletion_arr.tolist(),
         "insertion_curve": insertion_arr.tolist(),
-        "deletion_auc": float(deletion_auc),
-        "deletion_drop_auc": deletion_drop_auc,
-        "insertion_auc": float(insertion_auc),
+        "deletion_drop_curve": deletion_drop_curve.tolist(),
+        "insertion_gain_curve": insertion_gain_curve.tolist(),
+        "original_evidence": float(original_evidence),
+        "baseline_evidence": float(baseline_evidence),
+        "evidence_scale": scale,
+        "deletion_drop_auc": float(deletion_drop_auc),
+        "insertion_gain_auc": float(insertion_gain_auc),
+        "insertion_auc": float(insertion_gain_auc),
         "combined_score": combined_score,
+        "rank_by": rank_by,
     }
 
 
@@ -536,6 +576,8 @@ def select_dynamic_lambda(
     normalize: str = "l1",
     anchor_strategy: str = "mean",
     steps: int = 20,
+    rank_by: Literal["positive", "signed", "absolute"] = "positive",
+    eps: float = 1e-12,
 ) -> Dict[str, Any]:
     """Select a Dynamic-Hyb lambda using prototype-driven temporal curves."""
     if mode != "dynamic_hyb":
@@ -567,6 +609,7 @@ def select_dynamic_lambda(
                 lambda_hyb=lambda_value,
                 normalize=normalize,
                 anchor_strategy=anchor_strategy,
+                eps=eps,
             )
             curves = temporal_deletion_insertion_curves(
                 sample,
@@ -576,10 +619,12 @@ def select_dynamic_lambda(
                 rival_label=explanation.rival_label,
                 steps=steps,
                 baseline_strategy=anchor_strategy,
+                rank_by=rank_by,
+                eps=eps,
             )
             scores.append(float(curves["combined_score"]))
             deletion_scores.append(float(curves["deletion_drop_auc"]))
-            insertion_scores.append(float(curves["insertion_auc"]))
+            insertion_scores.append(float(curves["insertion_gain_auc"]))
             evidences.append(float(explanation.evidence))
         rows.append(
             {
@@ -589,11 +634,14 @@ def select_dynamic_lambda(
                 "score": float(np.mean(scores)),
                 "mean_combined_score": float(np.mean(scores)),
                 "mean_deletion_drop_auc": float(np.mean(deletion_scores)),
+                "mean_insertion_gain_auc": float(np.mean(insertion_scores)),
                 "mean_insertion_auc": float(np.mean(insertion_scores)),
                 "mean_evidence": float(np.mean(evidences)),
                 "n_eval_samples": len(X_items),
                 "normalize": normalize,
                 "anchor_strategy": anchor_strategy,
+                "rank_by": rank_by,
+                "metric_source": "normalized_prototype_evidence_curves",
             }
         )
 
@@ -601,7 +649,7 @@ def select_dynamic_lambda(
         rows,
         key=lambda row: (
             float(row["score"]),
-            float(row["mean_insertion_auc"]),
+            float(row["mean_insertion_gain_auc"]),
             -abs(float(row["lambda_hyb"]) - 0.5),
         ),
     )
@@ -612,6 +660,7 @@ def select_dynamic_lambda(
             str(row["lambda_hyb"]): {
                 "combined_score": float(row["mean_combined_score"]),
                 "deletion_drop_auc": float(row["mean_deletion_drop_auc"]),
+                "insertion_gain_auc": float(row["mean_insertion_gain_auc"]),
                 "insertion_auc": float(row["mean_insertion_auc"]),
                 "evidence": float(row["mean_evidence"]),
             }

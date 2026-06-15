@@ -282,7 +282,8 @@ Returns an `FPDEContext`.
 
 Dynamic-FPDE explains frame-level time-series feature matrices with shape
 `(T, F)` and returns attribution matrices with the same shape. It is prototype
-evidence decomposition, not a causal explanation.
+evidence decomposition, not a causal explanation. Dynamic-FPDE evidence values
+and validation curves are prototype evidence scores, not probabilities.
 
 ### `prepare_dynamic_fpde_context`
 
@@ -415,13 +416,33 @@ temporal_deletion_insertion_curves(
     rival_label,
     steps=20,
     baseline_strategy="mean",
+    rank_by="positive",
+    eps=1e-12,
 )
 ```
 
-Ranks frames by signed `explanation.time_importance`, then computes
-prototype-driven deletion and insertion curves using Dynamic-Diff evidence.
+Ranks frames by `explanation.time_importance`, then computes prototype-driven
+deletion and insertion curves using Dynamic-Diff evidence. `rank_by` controls
+the frame ordering:
 
-Returns deletion and insertion curves, AUC metrics, and `combined_score`.
+- `"positive"`: rank by `max(time_importance, 0)`, descending. This is the
+  default for target-supporting-frame evaluation.
+- `"signed"`: rank by signed `time_importance`, descending.
+- `"absolute"`: rank by `abs(time_importance)`, descending.
+
+The raw `deletion_curve` and `insertion_curve` contain unbounded prototype
+evidence scores. The AUC metrics are computed from normalized curves:
+
+```text
+scale = abs(original_evidence - baseline_evidence) + eps
+deletion_drop_curve = (original_evidence - deletion_curve) / scale
+insertion_gain_curve = (insertion_curve - insertion_curve[0]) / scale
+```
+
+Returns raw curves, normalized curves, `deletion_drop_auc`,
+`insertion_gain_auc`, `combined_score`, and metadata. `insertion_auc` is kept
+as a backward-compatible alias for `insertion_gain_auc`; prefer
+`insertion_gain_auc` in new code.
 
 ### `select_dynamic_lambda`
 
@@ -436,11 +457,14 @@ select_dynamic_lambda(
     normalize="l1",
     anchor_strategy="mean",
     steps=20,
+    rank_by="positive",
+    eps=1e-12,
 )
 ```
 
 Evaluates Dynamic-Hyb lambda candidates with temporal deletion/insertion
-metrics. The default lambda grid is `[0.0, 0.25, 0.5, 0.75, 1.0]`.
+metrics from normalized prototype-evidence curves. The default lambda grid is
+`[0.0, 0.25, 0.5, 0.75, 1.0]`.
 
 Returns a dictionary with `best_lambda`, candidate `rows`, metric means, and
 the best row.
@@ -923,7 +947,11 @@ metadata.
 
 Result object for one Dynamic-FPDE explanation. The `attributions` field has
 shape `(T, F)`, `time_importance` has shape `(T,)`, and
-`feature_importance` has shape `(F,)`.
+`feature_importance` has shape `(F,)`. For Dynamic-Hyb, `positive_score` and
+`negative_score` are deterministic weighted component scores; with
+`normalize="l1"`, component scores are divided by each component attribution
+L1 scale before mixing. Hyb evidence remains the sum of the mixed attribution
+matrix.
 
 ### `HybFPDEGridSearchResult`
 

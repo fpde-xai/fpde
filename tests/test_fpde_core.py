@@ -43,6 +43,15 @@ def test_installed_package_metadata_supports_python_312_plus():
     assert metadata["Requires-Python"] == ">=3.12"
 
 
+def test_pytest_is_dev_dependency_not_runtime_dependency():
+    metadata = importlib.metadata.metadata("fpde")
+    requirements = metadata.get_all("Requires-Dist") or []
+
+    runtime_requirements = [req for req in requirements if "extra ==" not in req]
+    assert not any(req.lower().startswith("pytest") for req in runtime_requirements)
+    assert any(req.lower().startswith("pytest") and "extra == " in req.lower() and "dev" in req.lower() for req in requirements)
+
+
 def test_all_fpde_modules_are_importable():
     package = importlib.import_module("fpde")
 
