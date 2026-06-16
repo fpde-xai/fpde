@@ -298,6 +298,11 @@ Native-Time Dynamic-FPDE is the intended formulation for variable-length music
 and cover-song analysis. The older context-based API remains available as a
 legacy resampled-time / benchmark-oriented variant.
 
+Raw-Waveform Dynamic-FPDE is a separate API for raw-sample explanations. It
+uses raw waveform arrays and labels only; it does not extract acoustic
+features, spectrograms, or MFCCs, and it does not normalize waveform
+amplitudes.
+
 ### `native_dynamic_diff_fpde`
 
 ```python
@@ -396,6 +401,104 @@ native_dynamic_fpde_explain_batch(
 Explains a list of variable-length `(T_i, F)` arrays without padding,
 resampling, or dense tensor conversion. `p_targets` and `p_rivals` may be a
 single `(F,)` vector broadcast to all samples or one vector per sample.
+
+### Raw-Waveform Dynamic-FPDE API
+
+```python
+prepare_raw_waveform_fpde_context(
+    waveforms,
+    labels,
+    *,
+    sample_rates,
+    target_sr=16000,
+    segment_sec=0.5,
+    hop_sec=0.1,
+)
+```
+
+Builds raw segment banks per label. Inputs may be mono 1D arrays or stereo 2D
+arrays. Stereo arrays are downmixed to mono. Each waveform is resampled to
+`target_sr`, but no fixed duration, peak normalization, RMS normalization, or
+loudness normalization is applied.
+
+The function uses sliding windows with `segment_length=int(round(segment_sec *
+target_sr))` and `hop_length=int(round(hop_sec * target_sr))`. Waveforms shorter
+than one segment are zero padded and tracked with a mask. Padding is excluded
+from prototype distances, evidence, aggregation, and exported segments. Longer
+waveforms keep full windows only, with an end-aligned final window when needed
+to cover the original sample axis.
+
+Returns a `RawWaveformFPDEContext` with label-specific segment banks and
+label-medoid raw prototypes.
+
+```python
+raw_waveform_fpde_explain_one(
+    waveform,
+    context,
+    *,
+    sample_rate,
+    target_label,
+    rival_label=None,
+    lambda_grid=None,
+    top_k_segments=1,
+    generator=None,
+    eps=1e-12,
+    device="cpu",
+    details=None,
+)
+```
+
+Explains one raw waveform. If `rival_label` is omitted, the closest non-target
+label medoid is used. The default `lambda_grid` is `[i / 10 for i in
+range(11)]`.
+
+Pass `device="cuda"` after installing `fpde[cuda13]` to run Raw-Diff,
+Raw-Cos, and Raw-Hyb window-evidence computation with CuPy on CUDA 13. Pass
+`device="auto"` to use CUDA when available and otherwise fall back to CPU.
+Waveform validation, sample-rate conversion, sliding-window construction, and
+artifact export remain CPU-side.
+
+For every lambda, the returned `RawWaveformFPDEExplanation.lambda_results`
+contains:
+
+- `phi`: sample-level Raw-Hyb attribution vector with the same shape as the
+  resampled waveform.
+- `window_evidence`: one scalar evidence value per sliding window.
+- `top_positive_segments` and `top_negative_segments`: original waveform
+  segments that most strongly support the target or rival label.
+- `generated_target` and `generated_rival`: optional generator-hook outputs.
+- `generation_status`: `"ok"` or `"skipped"` per generated role.
+
+The optional generator hook has this signature:
+
+```python
+generator(label, lambda_hyb, segment, sample_rate, role, metadata)
+```
+
+It is called only after Raw-Hyb evidence has been computed and top segments
+have been selected. FPDE does not include a built-in label-conditioned raw
+audio generator.
+
+```python
+raw_diff_fpde(window, p_target, p_rival, *, mask=None, target_mask=None, rival_mask=None)
+raw_cos_fpde(window, p_target, p_rival, *, mask=None, target_mask=None, rival_mask=None, eps=1e-12)
+raw_hyb_fpde(window, p_target, p_rival, *, lambda_hyb=0.5, mask=None, target_mask=None, rival_mask=None, eps=1e-12)
+```
+
+These tensor-level helpers compute Raw-Diff, Raw-Cos, and valid-mask L1-scaled
+Raw-Hyb evidence for one raw window and one target/rival prototype pair.
+
+```python
+save_raw_waveform_fpde_results(explanation, output_dir, *, save_plots=True)
+```
+
+Writes lambda-wise directories such as `raw_hyb_lambda_0.0`, window evidence
+CSVs, top segment WAV files, optional generated WAV files, `metrics.json`, and
+root-level `summary.csv`. WAV writing requires:
+
+```bash
+python -m pip install "fpde[audio]"
+```
 
 ### Legacy Resampled-Time API
 
@@ -994,6 +1097,21 @@ field has exactly the same shape as the input feature matrix, `time_importance`
 has shape `(T,)`, and `feature_importance` has shape `(F,)`. The object and
 its `details` metadata record `time_mode="native"`,
 `temporal_resampling=False`, and `temporal_pooling=False`.
+
+### `RawWaveformFPDEContext`
+
+Reusable state for Raw-Waveform Dynamic-FPDE. It contains label-specific raw
+segment banks, masks, label-medoid raw prototypes, `target_sr`,
+`segment_length`, `hop_length`, and metadata recording that acoustic feature
+extraction and waveform normalization are not used.
+
+### `RawWaveformFPDEExplanation`
+
+Result object for one Raw-Waveform Dynamic-FPDE explanation. It contains the
+resampled raw waveform, target/rival labels, lambda-wise results, optional
+generator outputs, and metadata recording `time_mode="raw_waveform"`,
+`temporal_resampling=False`, and `waveform_normalization=False`. Each
+lambda-wise `phi` vector has the same shape as the explanation waveform.
 
 ### `HybFPDEGridSearchResult`
 

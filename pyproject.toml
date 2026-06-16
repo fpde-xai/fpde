@@ -38,6 +38,10 @@ dev = [
 plot = [
   "matplotlib"
 ]
+audio = [
+  "soundfile",
+  "scipy"
+]
 cuda12 = [
   "cupy-cuda12x"
 ]

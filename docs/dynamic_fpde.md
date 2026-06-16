@@ -9,7 +9,7 @@ native frame-level time axis and computes a time-feature prototype-evidence
 matrix without temporal pooling, fixed-length resampling, or temporal
 aggregation.
 
-Use Native-Time Dynamic-FPDE when each sample is a matrix:
+Use Native-Time Dynamic-FPDE when each sample is a frame-level feature matrix:
 
 ```text
 X shape = (T, F)
@@ -121,6 +121,96 @@ If `X1.shape == (100, F)`, `X2.shape == (777, F)`, and
 `X3.shape == (2400, F)`, the returned attribution shapes are `(100, F)`,
 `(777, F)`, and `(2400, F)`.
 
+## Raw-Waveform Dynamic-FPDE
+
+Raw-Waveform Dynamic-FPDE is a separate raw-sample API for experiments that
+must use only a waveform and its label. It does not extract acoustic features,
+spectrograms, or MFCCs, and it does not apply peak, RMS, loudness, or other
+waveform normalization. Stereo inputs are downmixed to mono, and sample rates
+are converted to `target_sr`; clip durations remain variable.
+
+```python
+from fpde import prepare_raw_waveform_fpde_context, raw_waveform_fpde_explain_one
+
+context = prepare_raw_waveform_fpde_context(
+    train_waveforms,
+    train_labels,
+    sample_rates=train_sample_rates,
+    target_sr=16000,
+    segment_sec=0.5,
+    hop_sec=0.1,
+)
+
+explanation = raw_waveform_fpde_explain_one(
+    waveform,
+    context,
+    sample_rate=source_sample_rate,
+    target_label=label,
+    device="cuda",
+)
+```
+
+The context builds a raw segment bank per label with sliding windows. If a
+waveform is shorter than one segment, it is zero padded and tracked with a
+mask; padding is excluded from distance, evidence, aggregation, and exported
+segments. For longer waveforms, an end-aligned final window is added when
+needed so overlap-add attribution covers the original sample axis.
+
+Raw prototypes are label medoids from the segment banks. If `rival_label` is
+omitted, the closest non-target medoid label is used for the explanation.
+
+For each lambda, the API computes Raw-Diff and Raw-Cos window evidence, scales
+each component by its valid-mask L1 scale, and mixes them:
+
+```text
+Phi_hyb(lambda) = lambda * scale(Phi_diff)
+                + (1 - lambda) * scale(Phi_cos)
+```
+
+The default lambda grid is:
+
+```text
+0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
+0.6, 0.7, 0.8, 0.9, 1.0
+```
+
+Each lambda result includes a sample-level `phi` vector produced by
+overlap-add averaging, and every `phi.shape` matches the resampled raw
+waveform shape exactly.
+
+Install `fpde[cuda13]` and pass `device="cuda"` to run the Raw-Diff,
+Raw-Cos, and Raw-Hyb window-evidence computation with CuPy on CUDA 13. Use
+`device="auto"` to use CUDA when available and otherwise fall back to CPU.
+Waveform validation, mono conversion, resampling, window creation, and artifact
+export remain CPU-side.
+
+Label-conditioned RAW generation is intentionally a post-evidence verification
+hook rather than a built-in model:
+
+```python
+def generator(label, lambda_hyb, segment, sample_rate, role, metadata):
+    return generated_waveform
+
+explanation = raw_waveform_fpde_explain_one(
+    waveform,
+    context,
+    sample_rate=source_sample_rate,
+    target_label=label,
+    generator=generator,
+)
+```
+
+The hook is called after top positive and negative segments have been selected.
+Without a hook, generation is recorded as `"skipped"`.
+
+Use `save_raw_waveform_fpde_results` to write lambda-wise result directories
+with window evidence, top segment WAV files, optional generated WAV files,
+metrics, summary CSV, and plots. WAV export requires the optional audio extra:
+
+```bash
+python -m pip install "fpde[audio]"
+```
+
 ## Legacy Resampled-Time Variant
 
 The existing resampled-time formulation can be useful for controlled
@@ -175,7 +265,8 @@ evidence with shape `(N,)`. Pass `return_numpy=False` to keep returned arrays
 on the GPU as CuPy arrays.
 
 Feature extraction and temporal resampling remain CPU-side. CUDA acceleration
-is intended for batched, already-resampled Dynamic-FPDE tensor operations.
+is intended for batched, already-resampled Dynamic-FPDE tensor operations and
+does not apply to Raw-Waveform Dynamic-FPDE.
 
 ## Temporal Deletion And Insertion
 
@@ -205,14 +296,16 @@ new code.
 
 ## Limitations
 
-- Dynamic-FPDE explains frame-level acoustic feature matrices, not raw waveform
-  samples.
+- Native-Time Dynamic-FPDE explains frame-level acoustic feature matrices.
+- Raw-Waveform Dynamic-FPDE is the raw-sample variant and does not extract
+  acoustic features, spectrograms, or MFCCs.
 - Native-Time Dynamic-FPDE does not perform verse/chorus alignment.
 - Native-Time Dynamic-FPDE does not perform DTW.
 - Dynamic-FPDE is prototype evidence decomposition, not a causal explanation.
 - Dynamic-FPDE does not claim sampling-rate invariance.
 - Sampling-rate differences should be controlled before feature extraction by
-  converting audio to a common sample rate.
+  converting audio to a common sample rate. Raw-Waveform Dynamic-FPDE converts
+  input waveforms to `target_sr` before sliding-window evidence.
 - Attribution signs depend on the target/rival prototype pair.
 - CUDA helpers currently target already-resampled tensor operations, not
-  Native-Time feature-vector prototypes.
+  Native-Time feature-vector prototypes or Raw-Waveform Dynamic-FPDE.

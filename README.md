@@ -23,6 +23,7 @@ probabilities.
 - Build an experimental Bayesian posterior over Hyb-FPDE `lambda_hyb`
   candidates.
 - Explain variable-length frame-level feature matrices with Native-Time Dynamic-FPDE.
+- Explain raw waveform samples with Raw-Waveform Dynamic-FPDE.
 - Compute deletion and insertion perturbation curves for an attribution vector.
 - Plot attribution bars, cumulative waterfalls and contribution summaries, attribution
   heatmaps, FPDE-native prototype similarity distributions, and perturbation
@@ -40,6 +41,19 @@ Plotting helpers use matplotlib as an optional dependency:
 
 ```bash
 python -m pip install "fpde[plot]"
+```
+
+Raw-Waveform Dynamic-FPDE works with NumPy arrays by default. Install the audio
+extra when you want to save WAV artifacts:
+
+```bash
+python -m pip install "fpde[audio]"
+```
+
+For CUDA 13 acceleration of Raw-Waveform window-evidence computation, install:
+
+```bash
+python -m pip install "fpde[cuda13]"
 ```
 
 For local development, clone the repository and install it in editable mode:
@@ -269,9 +283,36 @@ benchmark comparisons. It linearly resamples sequences through
 `prototype_length`, so it is not the primary formulation for music-level
 Dynamic-FPDE explanations.
 
+Raw-Waveform Dynamic-FPDE is available as a separate raw-sample API. It uses
+raw waveform arrays and labels only, aligns sample rates to `target_sr`, keeps
+variable durations, does not normalize waveform amplitudes, and computes
+Raw-Diff, Raw-Cos, and Raw-Hyb evidence over sliding windows:
+
+```python
+from fpde import prepare_raw_waveform_fpde_context, raw_waveform_fpde_explain_one
+
+raw_context = prepare_raw_waveform_fpde_context(
+    train_waveforms,
+    train_labels,
+    sample_rates=train_sample_rates,
+    target_sr=16000,
+)
+
+raw_explanation = raw_waveform_fpde_explain_one(
+    waveform,
+    raw_context,
+    sample_rate=source_sample_rate,
+    target_label=label,
+    device="cuda",
+)
+```
+
+Label-conditioned RAW generation is an optional verification hook that runs
+after important positive and negative raw segments have been selected; FPDE
+does not include a built-in raw audio generator.
+
 Dynamic-FPDE is prototype evidence decomposition, not a causal explanation. It
-explains frame-level feature matrices, not raw waveform samples; it does not
-perform verse/chorus alignment, DTW, or sampling-rate-invariant audio
+does not perform verse/chorus alignment, DTW, or sampling-rate-invariant audio
 normalization.
 
 ## Run The Example
@@ -290,7 +331,7 @@ For the experimental Bayesian-FPDE lambda posterior workflow, see
 ## Documentation
 
 - [Method overview](https://github.com/fpde-xai/fpde/blob/main/docs/method_overview.md): core FPDE concepts and variants.
-- [Dynamic-FPDE](https://github.com/fpde-xai/fpde/blob/main/docs/dynamic_fpde.md): frame-level time-series feature attribution.
+- [Dynamic-FPDE](https://github.com/fpde-xai/fpde/blob/main/docs/dynamic_fpde.md): frame-level and raw-waveform time-series attribution.
 - [API reference](https://github.com/fpde-xai/fpde/blob/main/docs/api_reference.md): public functions, classes, parameters,
   and result objects.
 - [Reproducibility checklist](https://github.com/fpde-xai/fpde/blob/main/docs/reproducibility_checklist.md): what to record
