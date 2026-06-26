@@ -385,15 +385,67 @@ zero-filled.
 ```python
 from fpde.dynamic import PrototypeRawGenerator
 
-gen = PrototypeRawGenerator().fit(raw=raw_list, y=y)
-generated = gen.generate(label=0, length=100, noise_scale=0.05, random_state=0)
+gen = PrototypeRawGenerator().fit(raw=raw_list, features=feature_list, y=y)
+generated = gen.generate(
+    label=0,
+    length=100,
+    condition_features=desired_features,
+    noise_scale=0.05,
+    random_state=0,
+)
 ```
 
-Stores label-wise mask-weighted raw prototypes and interpolates them to a
-requested length. This is a lightweight baseline interface for future
-conditional raw generation models; it is not invoked by `DynamicFPDEEngine`.
-`condition_features` is accepted and validated for future compatibility, but
-the current baseline generator does not condition on it.
+#### `fit(raw, y, features=None, mask=None)`
+
+Stores label-wise mask-weighted raw prototypes and residual standard
+deviations. When `features` is provided, it also stores label feature
+prototypes and per-sample feature summaries. Each summary concatenates the
+valid-time mean, standard deviation, minimum, and maximum, so its dimension is
+`4 * C_feat`. Variable-length lists and explicit masks are supported. NaN and
+infinite raw or feature values raise `ValueError`.
+
+#### `generate(label, length=None, condition_features=None, noise_scale=0.0, random_state=None)`
+
+Returns an array with shape `(length, C_raw)`. If `length` is omitted, the
+longest valid training length for the label is used.
+
+- `condition_features=None` interpolates the label raw prototype.
+- A 2D `(T_cond, C_feat)` condition is summarized over all time steps.
+- A 1D condition must be a precomputed `(4 * C_feat,)` summary.
+- Conditions require `features` during `fit`; otherwise generation raises
+  `ValueError`.
+- `noise_scale > 0` adds label residual-scale Gaussian noise. A fixed
+  `random_state` produces deterministic output.
+
+For conditioned generation, the implementation finds the nearest feature
+summary among training samples with the same label. It interpolates that
+sample's raw residual to the requested length and adds the residual to the
+interpolated label prototype.
+
+#### `generate_with_metadata(...)`
+
+Accepts the same arguments as `generate` and returns:
+
+```python
+{
+    "raw": generated_raw,
+    "label": label,
+    "length": length,
+    "conditioned": True,
+    "selected_neighbor_index": 12,
+    "selected_neighbor_distance": 0.37,
+    "noise_scale": 0.05,
+}
+```
+
+For label-only generation, `conditioned` is `False` and both neighbor fields
+are `None`.
+
+`PrototypeRawGenerator` is a numpy-only nearest-neighbor residual baseline. It
+is not a conditional VAE, diffusion model, seq2seq model, or the main
+generative component of FPDE. `DynamicFPDEEngine` does not invoke it
+automatically; recompute features from generated raw data externally before
+passing both arrays to `explain_one`.
 
 ### `select_lambda_dynamic`
 

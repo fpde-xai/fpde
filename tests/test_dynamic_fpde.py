@@ -877,6 +877,103 @@ def test_prototype_raw_generator_hardening_and_reproducible_noise():
         gen.generate(label="a", condition_features=np.array([[np.nan]]))
 
 
+def _conditional_generator_fixture():
+    raw = [
+        np.array([[0.0], [1.0], [0.0]], dtype=float),
+        np.array([[2.0], [1.5], [1.0], [2.0]], dtype=float),
+        np.array([[5.0], [6.0]], dtype=float),
+    ]
+    features = [
+        np.array([[0.0], [0.0], [0.0]], dtype=float),
+        np.array([[10.0], [10.0], [10.0], [10.0]], dtype=float),
+        np.array([[20.0], [20.0]], dtype=float),
+    ]
+    generator = PrototypeRawGenerator().fit(
+        raw=raw,
+        features=features,
+        y=["a", "a", "b"],
+    )
+    return generator, features
+
+
+def test_prototype_raw_generator_conditions_on_2d_features_and_returns_metadata():
+    gen, features = _conditional_generator_fixture()
+
+    metadata = gen.generate_with_metadata(
+        label="a",
+        length=5,
+        condition_features=features[0],
+    )
+
+    assert metadata["raw"].shape == (5, 1)
+    assert np.all(np.isfinite(metadata["raw"]))
+    assert metadata["conditioned"] is True
+    assert metadata["selected_neighbor_index"] == 0
+    assert np.isfinite(metadata["selected_neighbor_distance"])
+    assert metadata["length"] == 5
+
+
+def test_prototype_raw_generator_accepts_1d_feature_summary():
+    gen, _ = _conditional_generator_fixture()
+    summary = gen.training_feature_summaries_[1]
+
+    generated = gen.generate(label="a", length=4, condition_features=summary)
+
+    assert generated.shape == (4, 1)
+    assert np.all(np.isfinite(generated))
+
+
+def test_prototype_raw_generator_condition_changes_output_and_noise_is_deterministic():
+    gen, features = _conditional_generator_fixture()
+
+    low = gen.generate(label="a", length=6, condition_features=features[0])
+    high = gen.generate(label="a", length=6, condition_features=features[1])
+    first = gen.generate(
+        label="a",
+        length=6,
+        condition_features=features[0],
+        noise_scale=0.2,
+        random_state=123,
+    )
+    second = gen.generate(
+        label="a",
+        length=6,
+        condition_features=features[0],
+        noise_scale=0.2,
+        random_state=123,
+    )
+
+    assert not np.array_equal(low, high)
+    np.testing.assert_allclose(first, second)
+
+
+def test_prototype_raw_generator_rejects_condition_without_fitted_features():
+    gen = PrototypeRawGenerator().fit(
+        raw=np.array([[[0.0], [1.0]], [[1.0], [2.0]]]),
+        y=[0, 1],
+    )
+
+    with pytest.raises(ValueError, match="without features"):
+        gen.generate(label=0, condition_features=np.array([[0.0]]))
+
+
+def test_prototype_raw_generator_rejects_invalid_condition_inputs():
+    gen, _ = _conditional_generator_fixture()
+
+    with pytest.raises(ValueError, match="NaN or inf"):
+        gen.generate(label="a", condition_features=np.array([[np.nan]]))
+    with pytest.raises(ValueError, match="NaN or inf"):
+        gen.generate(label="a", condition_features=np.array([[np.inf]]))
+    with pytest.raises(ValueError, match="dimension mismatch"):
+        gen.generate(label="a", condition_features=np.array([0.0, 1.0]))
+    with pytest.raises(ValueError, match="dimension mismatch"):
+        gen.generate(label="a", condition_features=np.ones((3, 2)))
+    with pytest.raises(ValueError, match="label"):
+        gen.generate(label="missing", condition_features=np.ones((3, 1)))
+    with pytest.raises(ValueError, match="length"):
+        gen.generate(label="a", length=0, condition_features=np.ones((3, 1)))
+
+
 def _probabilities_from_raw_mean(raw, features=None, dt=None, mask=None):
     values = np.asarray(raw, dtype=float)
     if mask is None:

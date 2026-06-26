@@ -146,21 +146,91 @@ groups as `raw`, `features`, and `dt`.
 `PrototypeRawGenerator` is a baseline label-conditioned raw generator. It is
 not the main explanation method and is not called by `DynamicFPDEEngine`.
 It stores label-wise raw prototypes, interpolates them to the requested length,
-and can add residual-scale noise.
+and can add residual-scale noise. When features are supplied to `fit`, it can
+also select a same-label training residual from a requested feature condition.
 
 ```python
 from fpde.dynamic import PrototypeRawGenerator
 
 gen = PrototypeRawGenerator()
-gen.fit(raw=raw_list, y=y)
+gen.fit(raw=raw_list, features=feature_list, y=y)
 
-generated = gen.generate(label=0, length=100, noise_scale=0.05, random_state=0)
+generated = gen.generate(
+    label=0,
+    length=100,
+    condition_features=desired_features,
+    noise_scale=0.05,
+    random_state=0,
+)
 assert generated.shape == (100, 3)
 ```
 
-The `condition_features` argument is accepted for API stability. It is a future
-hook for conditional VAE, diffusion, or seq2seq generators and is not used by
-the baseline generator today.
+`condition_features` accepts either a `(T_cond, C_feat)` sequence or a
+one-dimensional summary. A sequence is summarized by concatenating its
+per-channel mean, standard deviation, minimum, and maximum. Therefore, a 1D
+summary must contain `4 * C_feat` values. The generator finds the nearest
+summary among training samples with the requested label, interpolates that
+sample's raw residual to the requested length, and adds it to the label raw
+prototype. Passing a condition after fitting without features raises
+`ValueError`.
+
+Use `generate_with_metadata` to inspect which training sample supplied the
+residual:
+
+```python
+generated = gen.generate_with_metadata(
+    label=0,
+    length=100,
+    condition_features=desired_features,
+)
+raw = generated["raw"]
+neighbor_index = generated["selected_neighbor_index"]
+neighbor_distance = generated["selected_neighbor_distance"]
+```
+
+### Audit generated raw sequences
+
+Generated raw sequences can be passed to RawFeat Dynamic-FPDE after you
+recompute their extracted features with the same external feature pipeline
+used for training:
+
+```python
+from fpde.dynamic import DynamicFPDEEngine, PrototypeRawGenerator
+
+engine = DynamicFPDEEngine().fit(
+    raw=train_raw,
+    features=train_features,
+    y=train_y,
+)
+
+gen = PrototypeRawGenerator().fit(
+    raw=train_raw,
+    features=train_features,
+    y=train_y,
+)
+
+generated_raw = gen.generate(
+    label=1,
+    length=80,
+    condition_features=desired_features,
+    noise_scale=0.02,
+    random_state=0,
+)
+
+generated_features = feature_extractor(generated_raw)
+result = engine.explain_one(
+    raw=generated_raw,
+    features=generated_features,
+    target_class=1,
+    rival_class=0,
+    method="hyb",
+)
+```
+
+This conditioning gives more shape control than label-only prototype
+generation, but it remains a nearest-neighbor baseline. It is not a
+conditional VAE, diffusion model, seq2seq model, or the package's main
+generative model.
 
 ## Dynamic Lambda Selection
 
