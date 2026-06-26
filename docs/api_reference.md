@@ -319,9 +319,10 @@ result = engine.explain_one(
 )
 ```
 
-RawFeat Dynamic-FPDE accepts raw sequences with shape `(N, T, C_raw)` or a
-list of `(T_i, C_raw)` arrays. Optional `features` and `dt` use the same time
-axis. The engine builds:
+RawFeat Dynamic-FPDE accepts raw sequences with shape `(N, T, C_raw)`, one
+sample with shape `(T, C_raw)`, or a list/tuple of `(T_i, C_raw)` arrays.
+Optional `features` and `dt` use the same time axis. Version 1 has no deep
+encoder. The engine builds:
 
 ```text
 u_t = concat(raw_t, features_t, dt_t)
@@ -331,6 +332,18 @@ and stores it as `representation_`. Variable-length lists are padded to
 `T_max`; the mask is stored as boolean values and padding positions always
 produce zero attribution.
 
+Attribution is also zero when either selected prototype is invalid at a time
+step:
+
+```text
+valid_t = input_mask_t
+          AND prototype_masks_[target_class, t]
+          AND prototype_masks_[rival_class, t]
+```
+
+If no valid time step remains, the result has zero evidence,
+`audit["passed"] == True`, and `audit["warning"] == "no_valid_time"`.
+
 `explain_one` accepts `method="diff"`, `"cos"`, or `"hyb"` and returns a
 `DynamicFPDEResult`. The result includes:
 
@@ -339,6 +352,7 @@ produce zero attribution.
 - `time_attributions = attributions.sum(axis=1)`
 - `group_attributions` for `raw`, `features`, and `dt`
 - `audit`, where `evidence == audit["attribution_sum"]` within `tolerance`
+  plus valid-time counts, prototype-invalid counts, and component L1 scales
 
 Target/rival resolution uses explicit classes first, then the top two entries
 of a one-dimensional `predict_proba`, then nearest non-target prototypes.
@@ -362,8 +376,8 @@ from fpde.dynamic import validate_sequence_inputs
 batch = validate_sequence_inputs(raw, features=features, dt=dt, mask=mask)
 ```
 
-Normalizes fixed-length arrays and variable-length lists into padded raw,
-feature, `dt`, and boolean mask arrays. Invalid or padded time steps are
+Normalizes fixed-length arrays and variable-length lists or tuples into padded
+raw, feature, `dt`, and boolean mask arrays. Invalid or padded time steps are
 zero-filled.
 
 ### `PrototypeRawGenerator`
@@ -378,6 +392,8 @@ generated = gen.generate(label=0, length=100, noise_scale=0.05, random_state=0)
 Stores label-wise mask-weighted raw prototypes and interpolates them to a
 requested length. This is a lightweight baseline interface for future
 conditional raw generation models; it is not invoked by `DynamicFPDEEngine`.
+`condition_features` is accepted and validated for future compatibility, but
+the current baseline generator does not condition on it.
 
 ### `select_lambda_dynamic`
 
@@ -388,8 +404,10 @@ selection = select_lambda_dynamic(lambda_grid=[0.0, 0.5, 1.0])
 ```
 
 Returns a placeholder selection record for future RawFeat Dynamic-Hyb
-validation. It validates candidate lambdas but does not yet evaluate a
-held-out metric.
+validation. It validates candidate lambdas but does not evaluate a held-out
+metric yet. Rows use `status="placeholder"`,
+`metric_source="not_evaluated"`, and `score=NaN`; `best_lambda` is not an
+empirically selected value.
 
 ### `native_dynamic_diff_fpde`
 
@@ -1175,7 +1193,8 @@ Result object returned by `DynamicFPDEEngine.explain_one` and
 `target_class`, `rival_class`, scalar `evidence`, full concatenated
 `attributions`, group-specific raw/feature/`dt` attribution matrices,
 `time_attributions`, `group_attributions`, the boolean `mask`,
-`feature_slices`, and an `audit` dictionary for the attribution-sum identity.
+`feature_slices`, and an `audit` dictionary for the attribution-sum identity,
+valid-time accounting, prototype-invalid accounting, and Diff/Cos L1 scales.
 
 ### `DynamicFPDEExplanation`
 

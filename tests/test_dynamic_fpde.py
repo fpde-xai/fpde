@@ -27,6 +27,7 @@ from fpde import (
     select_dynamic_lambda,
     select_lambda_dynamic,
     temporal_deletion_insertion_curves,
+    validate_sequence_inputs,
 )
 
 
@@ -661,7 +662,8 @@ def test_rawfeat_dynamic_predict_proba_priority_and_lambda_placeholder():
     assert result.target_class == "b"
     assert result.rival_class == "c"
     assert selection["best_lambda"] == pytest.approx(0.5)
-    assert [row["status"] for row in selection["rows"]] == ["not_evaluated", "not_evaluated", "not_evaluated"]
+    assert [row["status"] for row in selection["rows"]] == ["placeholder", "placeholder", "placeholder"]
+    assert {row["metric_source"] for row in selection["rows"]} == {"not_evaluated"}
 
 
 def test_prototype_raw_generator_generates_requested_length():
@@ -676,3 +678,199 @@ def test_prototype_raw_generator_generates_requested_length():
 
     assert generated.shape == (5, 2)
     assert np.all(np.isfinite(generated))
+
+
+def test_rawfeat_prototype_invalid_times_are_zero_for_both_directions():
+    raw = [
+        np.array([[0.0], [0.1], [0.2]], dtype=float),
+        np.array([[0.1], [0.2], [0.3]], dtype=float),
+        np.array([[2.0], [2.1], [2.2], [2.3], [2.4], [2.5]], dtype=float),
+        np.array([[2.1], [2.2], [2.3], [2.4], [2.5], [2.6]], dtype=float),
+    ]
+    y = np.array([0, 0, 1, 1])
+    engine = DynamicFPDEEngine().fit(raw=raw, y=y)
+
+    short_target = engine.explain_one(raw=raw[2], method="diff", target_class=0, rival_class=1)
+    long_target = engine.explain_one(raw=raw[2], method="cos", target_class=1, rival_class=0)
+
+    for result in (short_target, long_target):
+        np.testing.assert_allclose(result.attributions[3:], 0.0)
+        np.testing.assert_allclose(result.time_attributions[3:], 0.0)
+        assert result.audit["prototype_invalid_time_count"] == 3
+        assert result.audit["valid_time_count"] == 3
+        assert result.audit["target_prototype_valid_count"] in (3, 6)
+        assert result.audit["rival_prototype_valid_count"] in (3, 6)
+        assert result.audit["passed"] is True
+        assert result.evidence == pytest.approx(float(np.sum(result.attributions)))
+
+
+def test_rawfeat_tuple_variable_length_input_and_single_2d_sample():
+    raw_tuple = (
+        np.array([[0.0, 0.1], [0.2, 0.3]], dtype=float),
+        np.array([[1.0, 1.1], [1.2, 1.3], [1.4, 1.5]], dtype=float),
+    )
+    feat_tuple = (
+        np.ones((2, 1), dtype=float),
+        np.ones((3, 1), dtype=float),
+    )
+
+    batch = validate_sequence_inputs(raw_tuple, features=feat_tuple)
+    single = validate_sequence_inputs(raw_tuple[0])
+
+    assert batch.raw.shape == (2, 3, 2)
+    assert batch.features is not None
+    assert batch.features.shape == (2, 3, 1)
+    np.testing.assert_array_equal(batch.mask[0], [True, True, False])
+    assert single.raw.shape == (1, 2, 2)
+    np.testing.assert_array_equal(single.mask, [[True, True]])
+
+
+def test_rawfeat_all_false_and_no_effective_valid_time_return_zero_audit_passed():
+    raw = np.array([[[0.0], [0.1], [0.2]], [[1.0], [1.1], [1.2]]], dtype=float)
+    engine = DynamicFPDEEngine().fit(raw=raw, y=[0, 1])
+    variable_engine = DynamicFPDEEngine().fit(
+        raw=[
+            np.array([[0.0], [0.1]], dtype=float),
+            np.array([[1.0], [1.1], [1.2]], dtype=float),
+        ],
+        y=[0, 1],
+    )
+
+    all_false = engine.explain_one(
+        raw=raw[0],
+        mask=np.array([False, False, False]),
+        method="hyb",
+        target_class=0,
+        rival_class=1,
+    )
+    no_effective = variable_engine.explain_one(
+        raw=np.array([[1.0], [1.1], [1.2]], dtype=float),
+        mask=np.array([False, False, True]),
+        method="cos",
+        target_class=0,
+        rival_class=1,
+    )
+
+    for result in (all_false, no_effective):
+        np.testing.assert_allclose(result.attributions, 0.0)
+        np.testing.assert_allclose(result.time_attributions, 0.0)
+        assert result.evidence == pytest.approx(0.0)
+        assert result.audit["valid_time_count"] == 0
+        assert result.audit["warning"] == "no_valid_time"
+        assert result.audit["passed"] is True
+
+
+def test_rawfeat_hyb_l1_edge_cases_are_finite_and_audited():
+    raw = np.array(
+        [
+            [[1.0, 0.0]],
+            [[0.0, 1.0]],
+        ],
+        dtype=float,
+    )
+    engine = DynamicFPDEEngine(lambda_hyb=0.5).fit(raw=raw, y=[0, 1])
+
+    engine.mean_anchor_ = np.zeros_like(engine.mean_anchor_)
+    diff_zero = engine.explain_one(raw=np.array([[0.5, 0.5]]), method="hyb", target_class=0, rival_class=1)
+    engine.mean_anchor_ = np.array([[0.25, 0.25]], dtype=float)
+    cos_zero = engine.explain_one(raw=np.array([[0.25, 0.25]]), method="hyb", target_class=0, rival_class=1)
+    both_zero = DynamicFPDEEngine().fit(raw=np.zeros((2, 1, 2)), y=[0, 1]).explain_one(
+        raw=np.zeros((1, 2)),
+        method="hyb",
+        target_class=0,
+        rival_class=1,
+    )
+
+    assert diff_zero.audit["diff_l1"] == pytest.approx(0.0)
+    assert diff_zero.audit["cos_l1"] > 0.0
+    assert cos_zero.audit["diff_l1"] > 0.0
+    assert cos_zero.audit["cos_l1"] == pytest.approx(0.0)
+    assert both_zero.audit["diff_l1"] == pytest.approx(0.0)
+    assert both_zero.audit["cos_l1"] == pytest.approx(0.0)
+    for result in (diff_zero, cos_zero, both_zero):
+        assert np.all(np.isfinite(result.attributions))
+        assert result.evidence == pytest.approx(float(np.sum(result.attributions)))
+        assert result.audit["passed"] is True
+
+
+def test_rawfeat_explain_batch_predict_proba_shape_validation():
+    raw = np.array(
+        [
+            [[0.0], [0.1]],
+            [[1.0], [1.1]],
+            [[2.0], [2.1]],
+        ],
+        dtype=float,
+    )
+    engine = DynamicFPDEEngine().fit(raw=raw, y=["a", "b", "c"])
+
+    results = engine.explain_batch(
+        raw=raw[:2],
+        predict_proba=np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.2]], dtype=float),
+        class_names=["a", "b", "c"],
+        method="diff",
+    )
+
+    assert [result.target_class for result in results] == ["a", "b"]
+    with pytest.raises(ValueError, match="2D"):
+        engine.explain_batch(raw=raw[:2], predict_proba=np.array([0.7, 0.2, 0.1]))
+    with pytest.raises(ValueError, match="class dimension"):
+        engine.explain_batch(raw=raw[:2], predict_proba=np.ones((2, 2)), class_names=["a", "b", "c"])
+
+
+def test_rawfeat_result_shape_contract_all_methods_with_dt():
+    rng = np.random.default_rng(42)
+    raw = rng.normal(size=(6, 4, 2))
+    features = rng.normal(size=(6, 4, 3))
+    dt = np.ones((6, 4, 1), dtype=float)
+    y = np.array([0, 1] * 3)
+    engine = DynamicFPDEEngine().fit(raw=raw, features=features, dt=dt, y=y)
+
+    for method in ("diff", "cos", "hyb"):
+        result = engine.explain_one(
+            raw=raw[0],
+            features=features[0],
+            dt=dt[0],
+            method=method,
+            target_class=0,
+            rival_class=1,
+        )
+
+        assert result.attributions.shape == (4, 6)
+        assert result.raw_attributions.shape == (4, 2)
+        assert result.feature_attributions is not None
+        assert result.feature_attributions.shape == (4, 3)
+        assert result.dt_attributions is not None
+        assert result.dt_attributions.shape == (4, 1)
+        assert result.time_attributions.shape == (4,)
+        assert (
+            result.group_attributions["raw"]
+            + result.group_attributions["features"]
+            + result.group_attributions["dt"]
+        ) == pytest.approx(result.evidence)
+        assert result.audit["passed"] is True
+
+
+def test_prototype_raw_generator_hardening_and_reproducible_noise():
+    raw = [
+        np.array([[0.0, 0.1], [0.2, 0.3]], dtype=float),
+        np.array([[0.1, 0.0], [0.3, 0.2]], dtype=float),
+        np.array([[1.0, 1.1], [1.2, 1.3]], dtype=float),
+    ]
+
+    with pytest.raises(RuntimeError, match="fit"):
+        PrototypeRawGenerator().generate(label="a")
+
+    gen = PrototypeRawGenerator().fit(raw=raw, y=["a", "a", "b"])
+    first = gen.generate(label="a", length=4, noise_scale=0.2, random_state=123)
+    second = gen.generate(label="a", length=4, noise_scale=0.2, random_state=123)
+
+    np.testing.assert_allclose(first, second)
+    with pytest.raises(ValueError, match="label"):
+        gen.generate(label="missing")
+    with pytest.raises(ValueError, match="length"):
+        gen.generate(label="a", length=0)
+    with pytest.raises(ValueError, match="noise_scale"):
+        gen.generate(label="a", noise_scale=-0.1)
+    with pytest.raises(ValueError, match="condition_features"):
+        gen.generate(label="a", condition_features=np.array([[np.nan]]))

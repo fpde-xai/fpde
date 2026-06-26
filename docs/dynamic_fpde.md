@@ -4,9 +4,11 @@ Dynamic-FPDE extends FPDE from fixed feature vectors to frame-level
 time-series feature matrices.
 
 RawFeat Dynamic-FPDE is the stateful engine for sequences that have raw values
-and, optionally, extracted feature sequences on the same time axis. It accepts
-fixed-length arrays and variable-length lists, pads variable-length inputs
-internally, and keeps an explicit mask so padding never contributes evidence.
+and, optionally, extracted feature sequences on the same time axis. Version 1
+has no deep encoder; it uses the concatenated raw/feature/`dt` representation
+directly. It accepts fixed-length arrays and variable-length lists or tuples,
+pads variable-length inputs internally, and keeps an explicit mask so padding
+never contributes evidence.
 
 ```python
 import numpy as np
@@ -81,7 +83,19 @@ Class prototypes are mask-weighted temporal means:
 p[k, t] = mean_i u[i, t] for y[i] = k and mask[i, t] = True
 ```
 
-If no sample is valid for a class at a time step, the prototype row stays zero.
+If no sample is valid for a class at a time step, the prototype row stays zero
+and `prototype_masks_` marks that class/time pair invalid. During explanation,
+the effective attribution mask is:
+
+```text
+valid_t = input_mask_t
+          AND prototype_masks_[target_class, t]
+          AND prototype_masks_[rival_class, t]
+```
+
+Padding and prototype-invalid time steps both produce exactly zero
+attribution. If `valid_t` is false for every time step, the engine returns zero
+evidence with `audit["warning"] == "no_valid_time"` instead of raising.
 
 ## RawFeat Dynamic-Diff, Cos, And Hyb
 
@@ -89,8 +103,8 @@ Dynamic-Diff decomposes the squared-distance prototype contrast:
 
 ```text
 Phi_diff[t, j] =
-    mask[t] * ((u[t, j] - p_rival[t, j])**2
-             - (u[t, j] - p_target[t, j])**2)
+    valid[t] * ((u[t, j] - p_rival[t, j])**2
+              - (u[t, j] - p_target[t, j])**2)
 
 E_diff = sum(Phi_diff)
 ```
@@ -103,8 +117,8 @@ q_target = p_target,t - anchor_t
 q_rival  = p_rival,t  - anchor_t
 
 Phi_cos[t, j] =
-    mask[t] * z[t, j] * q_target[j] / (N(z_t) * N(q_target))
-  - mask[t] * z[t, j] * q_rival[j]  / (N(z_t) * N(q_rival))
+    valid[t] * z[t, j] * q_target[j] / (N(z_t) * N(q_target))
+  - valid[t] * z[t, j] * q_rival[j]  / (N(z_t) * N(q_rival))
 ```
 
 Dynamic-Hyb L1-normalizes Diff and Cos attribution matrices. If a component
@@ -118,7 +132,8 @@ E_hyb = sum(Phi_hyb)
 ```
 
 Every `DynamicFPDEResult` includes an `audit` dictionary with
-`attribution_sum`, `evidence`, `abs_error`, and `passed`. The engine computes
+`attribution_sum`, `evidence`, `abs_error`, `passed`, effective valid-time
+counts, prototype-invalid counts, and component L1 scales. The engine computes
 evidence from the attribution sum, so `evidence == attributions.sum()` is the
 auditable identity for Diff, Cos, and Hyb.
 
@@ -144,7 +159,15 @@ assert generated.shape == (100, 3)
 ```
 
 The `condition_features` argument is accepted for API stability. It is a future
-hook for conditional VAE, diffusion, or seq2seq generators.
+hook for conditional VAE, diffusion, or seq2seq generators and is not used by
+the baseline generator today.
+
+## Dynamic Lambda Selection Placeholder
+
+`select_lambda_dynamic` currently validates a candidate lambda grid and returns
+a placeholder record. It does not evaluate a validation metric yet. Rows use
+`status="placeholder"`, `metric_source="not_evaluated"`, and `score=NaN`;
+`best_lambda` is a deterministic default preference, not a measured selection.
 
 ## Native-Time Dynamic-FPDE
 

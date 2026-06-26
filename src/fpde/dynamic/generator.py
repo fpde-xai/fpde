@@ -91,12 +91,14 @@ class PrototypeRawGenerator:
         ``condition_features`` is accepted for API stability, but v1 does not
         condition on it yet.
         """
-        if condition_features is not None:
-            np.asarray(condition_features, dtype=float)
         if not hasattr(self, "raw_prototypes_"):
             raise RuntimeError("PrototypeRawGenerator must be fit before generate")
         if label not in self.raw_prototypes_:
             raise ValueError(f"no raw prototype found for label={label!r}")
+        if condition_features is not None:
+            condition_arr = np.asarray(condition_features, dtype=float)
+            if not np.all(np.isfinite(condition_arr)):
+                raise ValueError("condition_features contains NaN or inf")
         out_length = self.default_lengths_[label] if length is None else int(length)
         generated = _interp_matrix(self.raw_prototypes_[label], out_length)
         scale = float(noise_scale)

@@ -41,8 +41,8 @@ def _as_sequence_array(name: str, value: object) -> np.ndarray:
     return arr
 
 
-def _is_sequence_list(value: object) -> bool:
-    return isinstance(value, list)
+def _is_sequence_collection(value: object) -> bool:
+    return isinstance(value, (list, tuple))
 
 
 def pad_sequences(sequences: Sequence[np.ndarray | Sequence[Sequence[float]]], value: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
@@ -107,8 +107,8 @@ def _optional_list(
 ) -> Optional[np.ndarray]:
     if value is None:
         return None
-    if not _is_sequence_list(value):
-        raise ValueError(f"{name} must be a list when raw is a list")
+    if not _is_sequence_collection(value):
+        raise ValueError(f"{name} must be a list or tuple when raw is a list or tuple")
     items = list(value)  # type: ignore[arg-type]
     if len(items) != len(raw_lengths):
         raise ValueError(f"number of {name} sequences differs from raw: {len(items)} vs {len(raw_lengths)}")
@@ -147,12 +147,13 @@ def validate_sequence_inputs(
     dt: Optional[np.ndarray | Sequence[np.ndarray | Sequence[Sequence[float]]]] = None,
     mask: Optional[np.ndarray | Sequence[Sequence[bool]] | Sequence[bool]] = None,
 ) -> DynamicInputBatch:
-    """Normalize fixed-length arrays and variable-length lists.
+    """Normalize fixed-length arrays and variable-length sequence collections.
 
     Fixed-length input accepts ``(N, T, C)`` arrays and a single ``(T, C)``
-    sample. Variable-length input accepts lists of ``(T_i, C)`` arrays.
+    sample. Variable-length input accepts lists or tuples of ``(T_i, C)``
+    arrays.
     """
-    if _is_sequence_list(raw):
+    if _is_sequence_collection(raw):
         raw_items = list(raw)  # type: ignore[arg-type]
         raw_arr, inferred_mask = pad_sequences(raw_items)
         raw_lengths = [int(np.asarray(item).shape[0]) for item in raw_items]

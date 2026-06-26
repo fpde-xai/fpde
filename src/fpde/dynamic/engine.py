@@ -144,8 +144,12 @@ class DynamicFPDEEngine:
         return padded, padded_mask
 
     def _nearest_indices(self, u: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        valid = mask[:, None]
-        distances = np.sum(np.where(valid, (u[None, :, :] - self.prototypes_) ** 2, 0.0), axis=(1, 2))
+        distances = np.empty(self.prototypes_.shape[0], dtype=float)
+        for idx in range(self.prototypes_.shape[0]):
+            valid = (mask & self.prototype_masks_[idx])[:, None]
+            distances[idx] = float(np.sum(np.where(valid, (u - self.prototypes_[idx]) ** 2, 0.0)))
+            if not np.any(valid):
+                distances[idx] = float("inf")
         return np.argsort(distances)
 
     def _resolve_target_rival(
@@ -195,10 +199,20 @@ class DynamicFPDEEngine:
             raise ValueError("at least two prototypes are required")
         return self.prototype_labels_[int(order[0])], self.prototype_labels_[int(order[1])]
 
-    def _attributions(self, u: np.ndarray, mask: np.ndarray, target_idx: int, rival_idx: int, method: DynamicMethod) -> tuple[np.ndarray, Dict[str, Any]]:
+    def _attributions(
+        self,
+        u: np.ndarray,
+        mask: np.ndarray,
+        target_idx: int,
+        rival_idx: int,
+        method: DynamicMethod,
+    ) -> tuple[np.ndarray, Dict[str, Any]]:
         target = self.prototypes_[target_idx]
         rival = self.prototypes_[rival_idx]
-        valid = mask[:, None].astype(float)
+        target_valid = self.prototype_masks_[target_idx]
+        rival_valid = self.prototype_masks_[rival_idx]
+        effective_mask = mask & target_valid & rival_valid
+        valid = effective_mask[:, None].astype(float)
 
         diff = valid * ((u - rival) ** 2 - (u - target) ** 2)
         z = u - self.mean_anchor_
@@ -209,21 +223,31 @@ class DynamicFPDEEngine:
         rival_norm = np.sqrt(np.sum(q_rival * q_rival, axis=1, keepdims=True) + self.eps**2)
         cos = valid * ((z * q_target) / (z_norm * target_norm) - (z * q_rival) / (z_norm * rival_norm))
 
+        details: Dict[str, Any] = {
+            "diff_evidence": float(np.sum(diff)),
+            "cos_evidence": float(np.sum(cos)),
+            "diff_l1": float(np.sum(np.abs(diff))),
+            "cos_l1": float(np.sum(np.abs(cos))),
+            "valid_time_count": int(np.sum(effective_mask)),
+            "masked_time_count": int(np.sum(~mask)),
+            "prototype_invalid_time_count": int(np.sum(mask & ~(target_valid & rival_valid))),
+            "target_prototype_valid_count": int(np.sum(target_valid)),
+            "rival_prototype_valid_count": int(np.sum(rival_valid)),
+            "effective_mask": effective_mask.copy(),
+        }
+        if details["valid_time_count"] == 0:
+            details["warning"] = "no_valid_time"
+
         if method == "diff":
-            return diff, {"diff_evidence": float(np.sum(diff)), "cos_evidence": float(np.sum(cos))}
+            return diff, details
         if method == "cos":
-            return cos, {"diff_evidence": float(np.sum(diff)), "cos_evidence": float(np.sum(cos))}
+            return cos, details
 
         diff_part = _l1_or_zero(diff, self.eps)
         cos_part = _l1_or_zero(cos, self.eps)
         attr = self.lambda_hyb * diff_part + (1.0 - self.lambda_hyb) * cos_part
-        return attr, {
-            "diff_evidence": float(np.sum(diff)),
-            "cos_evidence": float(np.sum(cos)),
-            "lambda_hyb": float(self.lambda_hyb),
-            "diff_l1": float(np.sum(np.abs(diff))),
-            "cos_l1": float(np.sum(np.abs(cos))),
-        }
+        details["lambda_hyb"] = float(self.lambda_hyb)
+        return attr, details
 
     def explain_one(
         self,
@@ -253,8 +277,9 @@ class DynamicFPDEEngine:
         )
         target_idx = self._prototype_index(target, "target_class")
         rival_idx = self._prototype_index(rival, "rival_class")
-        attr, _ = self._attributions(u, mask_one, target_idx, rival_idx, method_value)
-        attr[~mask_one] = 0.0
+        attr, attr_details = self._attributions(u, mask_one, target_idx, rival_idx, method_value)
+        effective_mask = attr_details.pop("effective_mask")
+        attr[~effective_mask] = 0.0
         evidence = float(np.sum(attr))
 
         slices = dict(self.feature_slices_)
@@ -286,6 +311,7 @@ class DynamicFPDEEngine:
                 "evidence": evidence,
                 "abs_error": abs_error,
                 "passed": abs_error <= self.tolerance,
+                **attr_details,
             },
         )
 
@@ -313,8 +339,14 @@ class DynamicFPDEEngine:
         if len(rivals) != n:
             raise ValueError(f"number of rival_classes differs from raw: {len(rivals)} vs {n}")
         proba_arr = None if predict_proba is None else np.asarray(predict_proba, dtype=float)
-        if proba_arr is not None and proba_arr.shape[0] != n:
-            raise ValueError(f"predict_proba first dimension must match raw samples: {proba_arr.shape[0]} vs {n}")
+        if proba_arr is not None:
+            if proba_arr.ndim != 2:
+                raise ValueError("predict_proba for explain_batch must be a 2D array with shape (N, K)")
+            if proba_arr.shape[0] != n:
+                raise ValueError(f"predict_proba first dimension must match raw samples: {proba_arr.shape[0]} vs {n}")
+            expected_classes = self.prototype_labels_ if class_names is None else np.asarray(class_names, dtype=object)
+            if expected_classes.shape[0] != proba_arr.shape[1]:
+                raise ValueError("predict_proba class dimension must match class_names or fitted prototype labels")
 
         results = []
         for i in range(n):
@@ -338,7 +370,11 @@ class DynamicFPDEEngine:
 
 
 def select_lambda_dynamic(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-    """Placeholder hook for future RawFeat Dynamic-Hyb validation selection."""
+    """Placeholder hook for future RawFeat Dynamic-Hyb validation selection.
+
+    This function validates candidate lambdas but does not perform validation
+    or score held-out samples yet.
+    """
     lambda_grid = kwargs.get("lambda_grid", None)
     values = [0.5] if lambda_grid is None else [float(value) for value in lambda_grid]
     if not values:
@@ -351,9 +387,9 @@ def select_lambda_dynamic(*args: Any, **kwargs: Any) -> Dict[str, Any]:
             {
                 "candidate_id": int(i),
                 "lambda_hyb": float(value),
-                "status": "not_evaluated",
+                "status": "placeholder",
                 "score": float("nan"),
-                "metric_source": "placeholder",
+                "metric_source": "not_evaluated",
             }
             for i, value in enumerate(lambdas)
         ],
