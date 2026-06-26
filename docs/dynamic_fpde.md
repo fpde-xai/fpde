@@ -162,12 +162,41 @@ The `condition_features` argument is accepted for API stability. It is a future
 hook for conditional VAE, diffusion, or seq2seq generators and is not used by
 the baseline generator today.
 
-## Dynamic Lambda Selection Placeholder
+## Dynamic Lambda Selection
 
-`select_lambda_dynamic` currently validates a candidate lambda grid and returns
-a placeholder record. It does not evaluate a validation metric yet. Rows use
-`status="placeholder"`, `metric_source="not_evaluated"`, and `score=NaN`;
-`best_lambda` is a deterministic default preference, not a measured selection.
+`select_lambda_dynamic` selects `lambda_hyb` with a validation perturbation
+protocol. For each candidate lambda, it builds coordinate-level Hyb
+attributions, ranks valid coordinates by signed positive attribution, and
+computes deletion and insertion probability curves:
+
+```text
+combined_score = 0.5 * (deletion_drop_auc + insertion_auc)
+```
+
+The lambda with the highest mean validation score is selected. Ties are broken
+by the smallest lambda. The perturbation baseline can be `"mean"`, `"zero"`,
+or a custom representation-space array.
+
+```python
+selection = select_lambda_dynamic(
+    engine=engine,
+    raw=val_raw,
+    features=val_features,
+    predict_proba=predict_proba,
+    lambdas=[0.0, 0.5, 1.0],
+    baseline="mean",
+    steps=20,
+)
+
+engine.lambda_hyb = selection["best_lambda"]
+```
+
+`predict_proba` can be a callable accepting `raw`, `features`, `dt`, and
+`mask` keywords, a callable accepting one concatenated representation array,
+or a precomputed probability matrix. A callable is required for meaningful
+perturbation curves because precomputed probabilities cannot react to deleted
+or inserted coordinates. The selected lambda is validation-protocol dependent;
+it is not a universal default.
 
 ## Native-Time Dynamic-FPDE
 

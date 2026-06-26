@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
 import numpy as np
 
@@ -32,6 +32,20 @@ def _l1_or_zero(values: np.ndarray, eps: float) -> np.ndarray:
     if scale <= eps:
         return np.zeros_like(values, dtype=float)
     return values / scale
+
+
+def split_representation(
+    representation: np.ndarray | Sequence[Sequence[float]] | Sequence[Sequence[Sequence[float]]],
+    feature_slices: Dict[str, slice],
+) -> tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+    """Split a concatenated RawFeat representation into raw/features/dt arrays."""
+    rep = np.asarray(representation, dtype=float)
+    if rep.ndim not in (2, 3):
+        raise ValueError(f"representation must be a 2D or 3D array, got shape={rep.shape}")
+    raw = rep[..., feature_slices["raw"]]
+    features = rep[..., feature_slices["features"]] if "features" in feature_slices else None
+    dt = rep[..., feature_slices["dt"]] if "dt" in feature_slices else None
+    return raw, features, dt
 
 
 class DynamicFPDEEngine:
@@ -368,21 +382,62 @@ class DynamicFPDEEngine:
             )
         return results
 
+    def select_lambda(
+        self,
+        *,
+        raw: np.ndarray | Sequence[np.ndarray | Sequence[Sequence[float]]],
+        features: Optional[np.ndarray | Sequence[np.ndarray | Sequence[Sequence[float]]]] = None,
+        dt: Optional[np.ndarray | Sequence[np.ndarray | Sequence[Sequence[float]]]] = None,
+        mask: Optional[np.ndarray | Sequence[Sequence[bool]]] = None,
+        predict_proba: Any,
+        lambdas: Optional[Sequence[float]] = None,
+        target_classes: Optional[Sequence[Any]] = None,
+        rival_classes: Optional[Sequence[Any]] = None,
+        class_names: Optional[Sequence[Any]] = None,
+        baseline: str | np.ndarray = "mean",
+        steps: int = 20,
+    ) -> Dict[str, Any]:
+        """Select ``lambda_hyb`` with RawFeat Dynamic-FPDE validation perturbations."""
+        return select_lambda_dynamic(
+            engine=self,
+            raw=raw,
+            features=features,
+            dt=dt,
+            mask=mask,
+            predict_proba=predict_proba,
+            lambdas=lambdas,
+            target_classes=target_classes,
+            rival_classes=rival_classes,
+            class_names=class_names,
+            baseline=baseline,
+            steps=steps,
+        )
 
-def select_lambda_dynamic(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-    """Placeholder hook for future RawFeat Dynamic-Hyb validation selection.
 
-    This function validates candidate lambdas but does not perform validation
-    or score held-out samples yet.
-    """
-    lambda_grid = kwargs.get("lambda_grid", None)
-    values = [0.5] if lambda_grid is None else [float(value) for value in lambda_grid]
-    if not values:
-        raise ValueError("lambda_grid must contain at least one value")
-    lambdas = [_validate_lambda_hyb(value) for value in values]
-    best = min(lambdas, key=lambda value: abs(value - 0.5))
+def _lambda_values(lambdas: Optional[Sequence[float]], lambda_grid: Optional[Sequence[float]]) -> list[float]:
+    values = lambdas if lambdas is not None else lambda_grid
+    if values is None:
+        values = [i / 10.0 for i in range(11)]
+    out = [_validate_lambda_hyb(float(value)) for value in values]
+    if not out:
+        raise ValueError("lambdas must contain at least one value")
+    return out
+
+
+def _placeholder_lambda_selection(lambdas: Optional[Sequence[float]], lambda_grid: Optional[Sequence[float]]) -> Dict[str, Any]:
+    values = _lambda_values(lambdas, lambda_grid)
+    best = min(values, key=lambda value: abs(value - 0.5))
     return {
         "best_lambda": float(best),
+        "scores": {float(value): float("nan") for value in values},
+        "deletion_drop_auc": {float(value): float("nan") for value in values},
+        "insertion_auc": {float(value): float("nan") for value in values},
+        "lambdas": [float(value) for value in values],
+        "n_validation": 0,
+        "steps": 0,
+        "baseline": "none",
+        "metric": "dynamic_deletion_insertion",
+        "status": "placeholder",
         "rows": [
             {
                 "candidate_id": int(i),
@@ -391,13 +446,383 @@ def select_lambda_dynamic(*args: Any, **kwargs: Any) -> Dict[str, Any]:
                 "score": float("nan"),
                 "metric_source": "not_evaluated",
             }
-            for i, value in enumerate(lambdas)
+            for i, value in enumerate(values)
         ],
         "details": {
             "status": "placeholder",
-            "message": "RawFeat Dynamic-Hyb validation selection is reserved for a future release.",
+            "message": "Pass engine, validation data, and predict_proba to evaluate dynamic lambda candidates.",
         },
     }
 
 
-__all__ = ["DynamicFPDEEngine", "select_lambda_dynamic"]
+def _canonical_steps(steps: int) -> int:
+    value = int(steps)
+    if value < 2:
+        raise ValueError("steps must be at least 2")
+    return value
+
+
+def _pad_batch_to_fit(engine: DynamicFPDEEngine, batch: DynamicInputBatch) -> tuple[np.ndarray, np.ndarray]:
+    if batch.representation.shape[2] != engine.prototypes_.shape[2]:
+        raise ValueError(
+            f"representation dimension mismatch: engine has {engine.prototypes_.shape[2]}, validation input has {batch.representation.shape[2]}"
+        )
+    if batch.representation.shape[1] > engine.prototypes_.shape[1]:
+        raise ValueError(
+            f"validation input length {batch.representation.shape[1]} exceeds fitted maximum length {engine.prototypes_.shape[1]}"
+        )
+    if batch.representation.shape[1] == engine.prototypes_.shape[1]:
+        return batch.representation.copy(), batch.mask.copy()
+    n_samples, t_current, n_features = batch.representation.shape
+    t_fit = int(engine.prototypes_.shape[1])
+    rep = np.zeros((n_samples, t_fit, n_features), dtype=float)
+    mask = np.zeros((n_samples, t_fit), dtype=bool)
+    rep[:, :t_current, :] = batch.representation
+    mask[:, :t_current] = batch.mask
+    return rep, mask
+
+
+def _baseline_representation(engine: DynamicFPDEEngine, baseline: str | np.ndarray) -> tuple[np.ndarray, str]:
+    if isinstance(baseline, str):
+        if baseline == "mean":
+            return engine.mean_anchor_.astype(float, copy=True), "mean"
+        if baseline == "zero":
+            return np.zeros_like(engine.mean_anchor_, dtype=float), "zero"
+        raise ValueError("baseline must be 'mean', 'zero', or an ndarray")
+    arr = np.asarray(baseline, dtype=float)
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("baseline contains NaN or inf")
+    if arr.ndim == 1:
+        if arr.shape[0] != engine.prototypes_.shape[2]:
+            raise ValueError(f"baseline feature dimension mismatch: expected {engine.prototypes_.shape[2]}, got {arr.shape[0]}")
+        return np.broadcast_to(arr, engine.mean_anchor_.shape).astype(float, copy=True), "custom"
+    if arr.shape != engine.mean_anchor_.shape:
+        raise ValueError(f"baseline must have shape {engine.mean_anchor_.shape} or ({engine.prototypes_.shape[2]},), got {arr.shape}")
+    return arr.astype(float, copy=True), "custom"
+
+
+def _as_probability_matrix(proba: Any, *, expected_rows: int) -> np.ndarray:
+    arr = np.asarray(proba, dtype=float)
+    if arr.ndim == 1 and expected_rows == 1:
+        arr = arr.reshape(1, -1)
+    if arr.ndim != 2:
+        raise ValueError(f"predict_proba must return a 2D array, got shape={arr.shape}")
+    if arr.shape[0] != expected_rows:
+        raise ValueError(f"predict_proba row count mismatch: expected {expected_rows}, got {arr.shape[0]}")
+    if arr.shape[1] < 2:
+        raise ValueError("predict_proba must contain at least two classes")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("predict_proba contains NaN or inf")
+    return arr
+
+
+def _call_predict_proba(
+    engine: DynamicFPDEEngine,
+    predict_proba: Callable[..., Any],
+    representation: np.ndarray,
+    mask: np.ndarray,
+) -> np.ndarray:
+    raw, features, dt = split_representation(representation, engine.feature_slices_)
+    try:
+        proba = predict_proba(raw=raw, features=features, dt=dt, mask=mask)
+    except TypeError as keyword_error:
+        try:
+            proba = predict_proba(representation)
+        except Exception as fallback_error:
+            raise ValueError(
+                "predict_proba callable must accept either keyword raw/features/dt/mask inputs "
+                "or one representation argument"
+            ) from fallback_error
+        if proba is None:
+            raise ValueError("predict_proba returned None") from keyword_error
+    return _as_probability_matrix(proba, expected_rows=representation.shape[0])
+
+
+def _validation_probabilities(
+    engine: DynamicFPDEEngine,
+    predict_proba: Any,
+    representation: np.ndarray,
+    mask: np.ndarray,
+) -> tuple[np.ndarray, str]:
+    if predict_proba is None:
+        raise ValueError("predict_proba is required for dynamic lambda selection")
+    if isinstance(predict_proba, np.ndarray):
+        return _as_probability_matrix(predict_proba, expected_rows=representation.shape[0]), "precomputed"
+    if callable(predict_proba):
+        return _call_predict_proba(engine, predict_proba, representation, mask), "callable"
+    raise ValueError("predict_proba must be a callable or a probability ndarray")
+
+
+def _probabilities_for_perturbations(
+    engine: DynamicFPDEEngine,
+    predict_proba: Any,
+    representation: np.ndarray,
+    mask: np.ndarray,
+    *,
+    fallback_row: np.ndarray,
+) -> np.ndarray:
+    if isinstance(predict_proba, np.ndarray):
+        return np.repeat(fallback_row.reshape(1, -1), representation.shape[0], axis=0)
+    return _call_predict_proba(engine, predict_proba, representation, mask)
+
+
+def _class_names(engine: DynamicFPDEEngine, class_names: Optional[Sequence[Any]], n_classes: int) -> np.ndarray:
+    names = engine.prototype_labels_ if class_names is None else np.asarray(class_names, dtype=object)
+    if names.shape[0] != n_classes:
+        raise ValueError("class_names length must match predict_proba class dimension")
+    return names
+
+
+def _class_probability_index(names: np.ndarray, label: Any) -> int:
+    matches = np.where(names == label)[0]
+    if matches.size == 0:
+        raise ValueError(f"target class {label!r} is not present in class_names")
+    return int(matches[0])
+
+
+def _resolve_selection_target_rival(
+    engine: DynamicFPDEEngine,
+    u: np.ndarray,
+    mask: np.ndarray,
+    *,
+    target_class: Any,
+    rival_class: Any,
+    predict_proba: np.ndarray,
+    class_names: np.ndarray,
+) -> tuple[Any, Any]:
+    if target_class is not None and rival_class is not None:
+        if target_class == rival_class:
+            raise ValueError("target_class and rival_class must differ")
+        engine._prototype_index(target_class, "target_class")
+        engine._prototype_index(rival_class, "rival_class")
+        return target_class, rival_class
+    if target_class is not None:
+        return engine._resolve_target_rival(
+            u,
+            mask,
+            target_class=target_class,
+            rival_class=None,
+            predict_proba=None,
+            class_names=class_names,
+        )
+    if rival_class is not None:
+        order = np.argsort(predict_proba)[::-1]
+        for idx in order.tolist():
+            candidate = class_names[int(idx)]
+            if candidate != rival_class:
+                engine._prototype_index(candidate, "target_class")
+                engine._prototype_index(rival_class, "rival_class")
+                return candidate, rival_class
+        raise ValueError("could not resolve a target class distinct from rival_class")
+    return engine._resolve_target_rival(
+        u,
+        mask,
+        target_class=None,
+        rival_class=None,
+        predict_proba=predict_proba,
+        class_names=class_names,
+    )
+
+
+def _auc(values: np.ndarray) -> float:
+    if values.shape[0] == 1:
+        return float(values[0])
+    fractions = np.linspace(0.0, 1.0, values.shape[0])
+    return float(np.trapezoid(values, fractions))
+
+
+def _rank_coordinates(attr: np.ndarray, effective_mask: np.ndarray) -> np.ndarray:
+    valid = np.broadcast_to(effective_mask[:, None], attr.shape).reshape(-1)
+    valid_indices = np.flatnonzero(valid)
+    if valid_indices.size == 0:
+        return valid_indices
+    scores = np.nan_to_num(attr.reshape(-1)[valid_indices], nan=-np.inf, posinf=-np.inf, neginf=-np.inf)
+    order = np.argsort(scores)[::-1]
+    return valid_indices[order]
+
+
+def _perturbation_representations(
+    original: np.ndarray,
+    baseline: np.ndarray,
+    order: np.ndarray,
+    *,
+    steps: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    fractions = np.linspace(0.0, 1.0, steps)
+    deletion = []
+    insertion = []
+    total = int(order.shape[0])
+    flat_original = original.reshape(-1)
+    flat_baseline = baseline.reshape(-1)
+    for fraction in fractions:
+        count = int(round(float(fraction) * total))
+        chosen = order[:count]
+        del_flat = flat_original.copy()
+        ins_flat = flat_baseline.copy()
+        if chosen.size:
+            del_flat[chosen] = flat_baseline[chosen]
+            ins_flat[chosen] = flat_original[chosen]
+        deletion.append(del_flat.reshape(original.shape))
+        insertion.append(ins_flat.reshape(original.shape))
+    return np.stack(deletion, axis=0), np.stack(insertion, axis=0)
+
+
+def select_lambda_dynamic(
+    *,
+    engine: Optional[DynamicFPDEEngine] = None,
+    raw: Optional[np.ndarray | Sequence[np.ndarray | Sequence[Sequence[float]]]] = None,
+    features: Optional[np.ndarray | Sequence[np.ndarray | Sequence[Sequence[float]]]] = None,
+    dt: Optional[np.ndarray | Sequence[np.ndarray | Sequence[Sequence[float]]]] = None,
+    mask: Optional[np.ndarray | Sequence[Sequence[bool]]] = None,
+    predict_proba: Any = None,
+    lambdas: Optional[Sequence[float]] = None,
+    lambda_grid: Optional[Sequence[float]] = None,
+    target_classes: Optional[Sequence[Any]] = None,
+    rival_classes: Optional[Sequence[Any]] = None,
+    class_names: Optional[Sequence[Any]] = None,
+    baseline: str | np.ndarray = "mean",
+    steps: int = 20,
+) -> Dict[str, Any]:
+    """Select ``lambda_hyb`` with coordinate-level deletion/insertion validation."""
+    if engine is None:
+        return _placeholder_lambda_selection(lambdas, lambda_grid)
+    if raw is None:
+        raise ValueError("raw validation data is required when engine is provided")
+    engine._check_fitted()
+    lambda_values = _lambda_values(lambdas, lambda_grid)
+    step_count = _canonical_steps(steps)
+    batch = validate_sequence_inputs(raw, features=features, dt=dt, mask=mask)
+    representation, input_mask = _pad_batch_to_fit(engine, batch)
+    n_validation = int(representation.shape[0])
+    baseline_rep, baseline_name = _baseline_representation(engine, baseline)
+    validation_proba, proba_source = _validation_probabilities(engine, predict_proba, representation, input_mask)
+    names = _class_names(engine, class_names, validation_proba.shape[1])
+
+    targets = [None] * n_validation if target_classes is None else list(target_classes)
+    rivals = [None] * n_validation if rival_classes is None else list(rival_classes)
+    if len(targets) != n_validation:
+        raise ValueError(f"number of target_classes differs from validation samples: {len(targets)} vs {n_validation}")
+    if len(rivals) != n_validation:
+        raise ValueError(f"number of rival_classes differs from validation samples: {len(rivals)} vs {n_validation}")
+
+    per_lambda_scores: Dict[float, list[float]] = {float(value): [] for value in lambda_values}
+    per_lambda_deletion: Dict[float, list[float]] = {float(value): [] for value in lambda_values}
+    per_lambda_insertion: Dict[float, list[float]] = {float(value): [] for value in lambda_values}
+    per_sample_scores: list[Dict[str, Any]] = []
+    resolved_targets = []
+    resolved_rivals = []
+
+    for sample_idx in range(n_validation):
+        target, rival = _resolve_selection_target_rival(
+            engine,
+            representation[sample_idx],
+            input_mask[sample_idx],
+            target_class=targets[sample_idx],
+            rival_class=rivals[sample_idx],
+            predict_proba=validation_proba[sample_idx],
+            class_names=names,
+        )
+        target_idx = engine._prototype_index(target, "target_class")
+        rival_idx = engine._prototype_index(rival, "rival_class")
+        target_column = _class_probability_index(names, target)
+        resolved_targets.append(target)
+        resolved_rivals.append(rival)
+
+        sample_rows: Dict[str, Any] = {
+            "sample_index": int(sample_idx),
+            "target_class": target,
+            "rival_class": rival,
+            "scores": {},
+            "deletion_drop_auc": {},
+            "insertion_auc": {},
+        }
+        for lambda_value in lambda_values:
+            old_lambda = engine.lambda_hyb
+            engine.lambda_hyb = float(lambda_value)
+            try:
+                attr, details = engine._attributions(
+                    representation[sample_idx],
+                    input_mask[sample_idx],
+                    target_idx,
+                    rival_idx,
+                    "hyb",
+                )
+            finally:
+                engine.lambda_hyb = old_lambda
+            effective_mask = details["effective_mask"]
+            order = _rank_coordinates(attr, effective_mask)
+            deletion_rep, insertion_rep = _perturbation_representations(
+                representation[sample_idx],
+                baseline_rep,
+                order,
+                steps=step_count,
+            )
+            deletion_rep[:, ~input_mask[sample_idx], :] = 0.0
+            insertion_rep[:, ~input_mask[sample_idx], :] = 0.0
+            repeated_mask = np.repeat(input_mask[sample_idx][None, :], step_count, axis=0)
+            deletion_proba = _probabilities_for_perturbations(
+                engine,
+                predict_proba,
+                deletion_rep,
+                repeated_mask,
+                fallback_row=validation_proba[sample_idx],
+            )
+            insertion_proba = _probabilities_for_perturbations(
+                engine,
+                predict_proba,
+                insertion_rep,
+                repeated_mask,
+                fallback_row=validation_proba[sample_idx],
+            )
+            deletion_curve = deletion_proba[:, target_column]
+            insertion_curve = insertion_proba[:, target_column]
+            deletion_drop_auc = float(deletion_curve[0] - _auc(deletion_curve))
+            insertion_auc = _auc(insertion_curve)
+            combined = float(0.5 * (deletion_drop_auc + insertion_auc))
+            key = float(lambda_value)
+            per_lambda_scores[key].append(combined)
+            per_lambda_deletion[key].append(deletion_drop_auc)
+            per_lambda_insertion[key].append(insertion_auc)
+            sample_rows["scores"][key] = combined
+            sample_rows["deletion_drop_auc"][key] = deletion_drop_auc
+            sample_rows["insertion_auc"][key] = insertion_auc
+        per_sample_scores.append(sample_rows)
+
+    scores = {key: float(np.mean(values)) for key, values in per_lambda_scores.items()}
+    deletion_scores = {key: float(np.mean(values)) for key, values in per_lambda_deletion.items()}
+    insertion_scores = {key: float(np.mean(values)) for key, values in per_lambda_insertion.items()}
+    best_lambda = min(lambda_values, key=lambda value: (-scores[float(value)], float(value)))
+    rows = [
+        {
+            "candidate_id": int(i),
+            "lambda_hyb": float(value),
+            "status": "evaluated",
+            "score": scores[float(value)],
+            "deletion_drop_auc": deletion_scores[float(value)],
+            "insertion_auc": insertion_scores[float(value)],
+            "metric_source": "dynamic_deletion_insertion",
+        }
+        for i, value in enumerate(lambda_values)
+    ]
+    return {
+        "best_lambda": float(best_lambda),
+        "scores": scores,
+        "deletion_drop_auc": deletion_scores,
+        "insertion_auc": insertion_scores,
+        "lambdas": [float(value) for value in lambda_values],
+        "rows": rows,
+        "per_sample_scores": per_sample_scores,
+        "target_classes": resolved_targets,
+        "rival_classes": resolved_rivals,
+        "n_validation": n_validation,
+        "steps": step_count,
+        "baseline": baseline_name,
+        "metric": "dynamic_deletion_insertion",
+        "status": "evaluated",
+        "tie_break": "smallest_lambda",
+        "predict_proba_source": proba_source,
+        "granularity": "coordinate",
+    }
+
+
+__all__ = ["DynamicFPDEEngine", "select_lambda_dynamic", "split_representation"]

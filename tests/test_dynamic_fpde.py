@@ -26,6 +26,7 @@ from fpde import (
     resample_time_series_linear,
     select_dynamic_lambda,
     select_lambda_dynamic,
+    split_representation,
     temporal_deletion_insertion_curves,
     validate_sequence_inputs,
 )
@@ -874,3 +875,227 @@ def test_prototype_raw_generator_hardening_and_reproducible_noise():
         gen.generate(label="a", noise_scale=-0.1)
     with pytest.raises(ValueError, match="condition_features"):
         gen.generate(label="a", condition_features=np.array([[np.nan]]))
+
+
+def _probabilities_from_raw_mean(raw, features=None, dt=None, mask=None):
+    values = np.asarray(raw, dtype=float)
+    if mask is None:
+        means = np.mean(values, axis=(1, 2))
+    else:
+        weights = np.asarray(mask, dtype=float)
+        denom = np.maximum(np.sum(weights, axis=1), 1.0)
+        means = np.sum(values[:, :, 0] * weights, axis=1) / denom
+    p1 = 1.0 / (1.0 + np.exp(-4.0 * (means - 0.5)))
+    return np.stack([1.0 - p1, p1], axis=1)
+
+
+def _probabilities_from_representation_mean(representation):
+    raw, _, _ = split_representation(representation, {"raw": slice(0, 1)})
+    return _probabilities_from_raw_mean(raw)
+
+
+def test_select_lambda_dynamic_evaluates_fixed_length_validation():
+    raw = np.array(
+        [
+            [[0.0], [0.1], [0.2]],
+            [[0.1], [0.2], [0.3]],
+            [[0.8], [0.9], [1.0]],
+            [[0.7], [0.8], [0.9]],
+        ],
+        dtype=float,
+    )
+    engine = DynamicFPDEEngine().fit(raw=raw, y=[0, 0, 1, 1])
+
+    selection = select_lambda_dynamic(
+        engine=engine,
+        raw=raw[2:],
+        predict_proba=_probabilities_from_raw_mean,
+        lambdas=[0.0, 0.5, 1.0],
+        target_classes=[1, 1],
+        rival_classes=[0, 0],
+        steps=5,
+    )
+
+    assert selection["status"] == "evaluated"
+    assert selection["metric"] == "dynamic_deletion_insertion"
+    assert selection["best_lambda"] in [0.0, 0.5, 1.0]
+    assert set(selection["scores"]) == {0.0, 0.5, 1.0}
+    assert selection["n_validation"] == 2
+    assert selection["steps"] == 5
+    assert selection["granularity"] == "coordinate"
+    assert all(np.isfinite(value) for value in selection["scores"].values())
+
+
+def test_engine_select_lambda_method_delegates_to_function():
+    raw = np.array(
+        [
+            [[0.0], [0.1]],
+            [[0.2], [0.3]],
+            [[0.8], [0.9]],
+            [[1.0], [1.1]],
+        ],
+        dtype=float,
+    )
+    engine = DynamicFPDEEngine().fit(raw=raw, y=[0, 0, 1, 1])
+
+    selection = engine.select_lambda(
+        raw=raw[:2],
+        predict_proba=_probabilities_from_raw_mean,
+        lambdas=[0.0, 1.0],
+        target_classes=[0, 0],
+        rival_classes=[1, 1],
+        steps=3,
+    )
+
+    assert selection["status"] == "evaluated"
+    assert selection["lambdas"] == [0.0, 1.0]
+
+
+def test_select_lambda_dynamic_accepts_precomputed_predict_proba():
+    raw = np.array(
+        [
+            [[0.0], [0.1]],
+            [[1.0], [1.1]],
+            [[0.2], [0.3]],
+            [[0.9], [1.0]],
+        ],
+        dtype=float,
+    )
+    engine = DynamicFPDEEngine().fit(raw=raw[:2], y=[0, 1])
+
+    selection = select_lambda_dynamic(
+        engine=engine,
+        raw=raw[2:],
+        predict_proba=np.array([[0.8, 0.2], [0.1, 0.9]], dtype=float),
+        lambdas=[0.0, 0.5, 1.0],
+        steps=4,
+    )
+
+    assert selection["status"] == "evaluated"
+    assert selection["predict_proba_source"] == "precomputed"
+    assert selection["best_lambda"] == pytest.approx(0.0)
+
+
+def test_select_lambda_dynamic_callable_raw_features_api():
+    raw = np.array(
+        [
+            [[0.0], [0.1], [0.2]],
+            [[1.0], [1.1], [1.2]],
+            [[0.2], [0.3], [0.4]],
+            [[0.8], [0.9], [1.0]],
+        ],
+        dtype=float,
+    )
+    features = raw + 0.5
+    engine = DynamicFPDEEngine().fit(raw=raw[:2], features=features[:2], y=[0, 1])
+    calls = []
+
+    def predict_proba(*, raw=None, features=None, dt=None, mask=None):
+        calls.append((raw.shape, None if features is None else features.shape, mask.shape))
+        return _probabilities_from_raw_mean(raw, features=features, mask=mask)
+
+    selection = select_lambda_dynamic(
+        engine=engine,
+        raw=raw[2:],
+        features=features[2:],
+        predict_proba=predict_proba,
+        lambdas=[0.0, 0.5],
+        target_classes=[0, 1],
+        rival_classes=[1, 0],
+        baseline="zero",
+        steps=3,
+    )
+
+    assert selection["status"] == "evaluated"
+    assert calls
+    assert selection["baseline"] == "zero"
+
+
+def test_select_lambda_dynamic_callable_representation_fallback():
+    raw = np.array(
+        [
+            [[0.0], [0.1]],
+            [[1.0], [1.1]],
+            [[0.2], [0.3]],
+            [[0.8], [0.9]],
+        ],
+        dtype=float,
+    )
+    engine = DynamicFPDEEngine().fit(raw=raw[:2], y=[0, 1])
+
+    selection = select_lambda_dynamic(
+        engine=engine,
+        raw=raw[2:],
+        predict_proba=_probabilities_from_representation_mean,
+        lambdas=[0.0, 1.0],
+        target_classes=[0, 1],
+        rival_classes=[1, 0],
+        steps=3,
+    )
+
+    assert selection["status"] == "evaluated"
+    assert selection["predict_proba_source"] == "callable"
+
+
+def test_select_lambda_dynamic_variable_length_validation_keeps_padding_zero():
+    train_raw = [
+        np.array([[0.0], [0.1]], dtype=float),
+        np.array([[1.0], [1.1], [1.2], [1.3]], dtype=float),
+    ]
+    val_raw = [
+        np.array([[0.2], [0.3]], dtype=float),
+        np.array([[0.8], [0.9], [1.0], [1.1]], dtype=float),
+    ]
+    engine = DynamicFPDEEngine().fit(raw=train_raw, y=[0, 1])
+
+    def predict_proba(*, raw=None, features=None, dt=None, mask=None):
+        assert np.all(raw[~mask] == 0.0)
+        return _probabilities_from_raw_mean(raw, mask=mask)
+
+    selection = select_lambda_dynamic(
+        engine=engine,
+        raw=val_raw,
+        predict_proba=predict_proba,
+        lambdas=[0.0, 0.5, 1.0],
+        target_classes=[0, 1],
+        rival_classes=[1, 0],
+        steps=4,
+    )
+
+    assert selection["status"] == "evaluated"
+    assert selection["n_validation"] == 2
+
+
+def test_select_lambda_dynamic_all_zero_attribution_case_is_finite():
+    raw = np.zeros((4, 3, 1), dtype=float)
+    engine = DynamicFPDEEngine().fit(raw=raw, y=[0, 0, 1, 1])
+
+    selection = select_lambda_dynamic(
+        engine=engine,
+        raw=raw[:2],
+        predict_proba=np.array([[0.5, 0.5], [0.5, 0.5]], dtype=float),
+        lambdas=[0.0, 0.5, 1.0],
+        target_classes=[0, 0],
+        rival_classes=[1, 1],
+        steps=3,
+    )
+
+    assert selection["status"] == "evaluated"
+    assert selection["best_lambda"] in [0.0, 0.5, 1.0]
+    assert all(np.isfinite(value) for value in selection["scores"].values())
+
+
+def test_select_lambda_dynamic_invalid_inputs():
+    raw = np.array([[[0.0]], [[1.0]]], dtype=float)
+    engine = DynamicFPDEEngine().fit(raw=raw, y=[0, 1])
+
+    with pytest.raises(ValueError, match="lambdas"):
+        select_lambda_dynamic(engine=engine, raw=raw, predict_proba=np.ones((2, 2)), lambdas=[])
+    with pytest.raises(ValueError, match="lambda_hyb"):
+        select_lambda_dynamic(engine=engine, raw=raw, predict_proba=np.ones((2, 2)), lambdas=[-0.1])
+    with pytest.raises(ValueError, match="steps"):
+        select_lambda_dynamic(engine=engine, raw=raw, predict_proba=np.ones((2, 2)), lambdas=[0.5], steps=1)
+    with pytest.raises(ValueError, match="row count"):
+        select_lambda_dynamic(engine=engine, raw=raw, predict_proba=np.ones((1, 2)), lambdas=[0.5])
+    with pytest.raises(ValueError, match="predict_proba"):
+        select_lambda_dynamic(engine=engine, raw=raw, predict_proba=lambda bad: None, lambdas=[0.5])

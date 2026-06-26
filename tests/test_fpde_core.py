@@ -44,6 +44,7 @@ from fpde import (
     raw_waveform_fpde_explain_one,
     resample_time_series_linear,
     select_lambda_dynamic,
+    split_representation,
     top_two_labels,
 )
 
@@ -97,6 +98,7 @@ def test_public_module_import_paths_remain_available():
             "prepare_dynamic_fpde_context",
             "pad_sequences",
             "select_lambda_dynamic",
+            "split_representation",
             "resample_time_series_linear",
             "plot_attributions",
             "plot_attribution_waterfall",
@@ -129,6 +131,7 @@ def test_public_module_import_paths_remain_available():
             "prepare_dynamic_fpde_context",
             "pad_sequences",
             "select_lambda_dynamic",
+            "split_representation",
             "resample_time_series_linear",
             "plot_attributions",
             "plot_attribution_waterfall",
@@ -164,6 +167,7 @@ def test_public_module_import_paths_remain_available():
             "dynamic_fpde_explain_batch",
             "pad_sequences",
             "select_lambda_dynamic",
+            "split_representation",
             "temporal_deletion_insertion_curves",
             "select_dynamic_lambda",
             "plot_dynamic_time_importance",

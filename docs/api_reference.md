@@ -398,16 +398,55 @@ the current baseline generator does not condition on it.
 ### `select_lambda_dynamic`
 
 ```python
-from fpde.dynamic import select_lambda_dynamic
+from fpde.dynamic import DynamicFPDEEngine, select_lambda_dynamic
 
-selection = select_lambda_dynamic(lambda_grid=[0.0, 0.5, 1.0])
+engine = DynamicFPDEEngine().fit(raw=train_raw, features=train_features, y=train_y)
+selection = select_lambda_dynamic(
+    engine=engine,
+    raw=val_raw,
+    features=val_features,
+    predict_proba=predict_proba,
+    lambdas=[0.0, 0.5, 1.0],
+    baseline="mean",
+    steps=20,
+)
 ```
 
-Returns a placeholder selection record for future RawFeat Dynamic-Hyb
-validation. It validates candidate lambdas but does not evaluate a held-out
-metric yet. Rows use `status="placeholder"`,
-`metric_source="not_evaluated"`, and `score=NaN`; `best_lambda` is not an
-empirically selected value.
+Selects RawFeat Dynamic-Hyb `lambda_hyb` with a coordinate-level validation
+perturbation score. For each candidate lambda, valid coordinates are ranked by
+signed positive attribution. Deletion replaces top-ranked coordinates with a
+baseline; insertion starts from the baseline and restores top-ranked
+coordinates. The score is:
+
+```text
+0.5 * (deletion_drop_auc + insertion_auc)
+```
+
+The return dictionary includes `best_lambda`, `scores`,
+`deletion_drop_auc`, `insertion_auc`, `lambdas`, `rows`, `n_validation`,
+`steps`, `baseline`, `metric="dynamic_deletion_insertion"`, and
+`status="evaluated"`. Ties are broken by the smallest lambda. The engine also
+provides `engine.select_lambda(...)`, which delegates to this function.
+
+`predict_proba` may be a callable accepting `raw`, `features`, `dt`, and
+`mask` keywords, a callable accepting one concatenated representation array, or
+a precomputed probability matrix. Use a callable for meaningful perturbation
+curves because precomputed probabilities cannot change under perturbation.
+
+Calling `select_lambda_dynamic(lambda_grid=[...])` without an engine remains a
+backward-compatible placeholder mode for lambda validation only.
+
+### `split_representation`
+
+```python
+from fpde.dynamic import split_representation
+
+raw, features, dt = split_representation(representation, feature_slices)
+```
+
+Splits a concatenated RawFeat representation back into raw, optional feature,
+and optional `dt` arrays using a `DynamicFPDEResult.feature_slices` or fitted
+engine `feature_slices_` mapping.
 
 ### `native_dynamic_diff_fpde`
 
