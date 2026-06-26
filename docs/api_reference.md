@@ -303,6 +303,94 @@ uses raw waveform arrays and labels only; it does not extract acoustic
 features, spectrograms, or MFCCs, and it does not normalize waveform
 amplitudes.
 
+### `DynamicFPDEEngine`
+
+```python
+from fpde.dynamic import DynamicFPDEEngine
+
+engine = DynamicFPDEEngine(lambda_hyb=0.5, eps=1e-12, tolerance=1e-9)
+engine.fit(raw=raw, y=y, features=features, dt=dt, mask=mask)
+result = engine.explain_one(
+    raw=raw[0],
+    features=features[0],
+    method="hyb",
+    target_class=0,
+    rival_class=1,
+)
+```
+
+RawFeat Dynamic-FPDE accepts raw sequences with shape `(N, T, C_raw)` or a
+list of `(T_i, C_raw)` arrays. Optional `features` and `dt` use the same time
+axis. The engine builds:
+
+```text
+u_t = concat(raw_t, features_t, dt_t)
+```
+
+and stores it as `representation_`. Variable-length lists are padded to
+`T_max`; the mask is stored as boolean values and padding positions always
+produce zero attribution.
+
+`explain_one` accepts `method="diff"`, `"cos"`, or `"hyb"` and returns a
+`DynamicFPDEResult`. The result includes:
+
+- `attributions` with shape `(T_max, C_raw + C_feat + C_dt)`
+- `raw_attributions`, `feature_attributions`, and `dt_attributions`
+- `time_attributions = attributions.sum(axis=1)`
+- `group_attributions` for `raw`, `features`, and `dt`
+- `audit`, where `evidence == audit["attribution_sum"]` within `tolerance`
+
+Target/rival resolution uses explicit classes first, then the top two entries
+of a one-dimensional `predict_proba`, then nearest non-target prototypes.
+
+### `pad_sequences`
+
+```python
+from fpde.dynamic import pad_sequences
+
+padded, mask = pad_sequences([raw_a, raw_b])
+```
+
+Pads a list of `(T_i, C)` arrays to `(N, T_max, C)` and returns a boolean mask
+with shape `(N, T_max)`.
+
+### `validate_sequence_inputs`
+
+```python
+from fpde.dynamic import validate_sequence_inputs
+
+batch = validate_sequence_inputs(raw, features=features, dt=dt, mask=mask)
+```
+
+Normalizes fixed-length arrays and variable-length lists into padded raw,
+feature, `dt`, and boolean mask arrays. Invalid or padded time steps are
+zero-filled.
+
+### `PrototypeRawGenerator`
+
+```python
+from fpde.dynamic import PrototypeRawGenerator
+
+gen = PrototypeRawGenerator().fit(raw=raw_list, y=y)
+generated = gen.generate(label=0, length=100, noise_scale=0.05, random_state=0)
+```
+
+Stores label-wise mask-weighted raw prototypes and interpolates them to a
+requested length. This is a lightweight baseline interface for future
+conditional raw generation models; it is not invoked by `DynamicFPDEEngine`.
+
+### `select_lambda_dynamic`
+
+```python
+from fpde.dynamic import select_lambda_dynamic
+
+selection = select_lambda_dynamic(lambda_grid=[0.0, 0.5, 1.0])
+```
+
+Returns a placeholder selection record for future RawFeat Dynamic-Hyb
+validation. It validates candidate lambdas but does not yet evaluate a
+held-out metric.
+
 ### `native_dynamic_diff_fpde`
 
 ```python
@@ -1079,6 +1167,15 @@ zero anchor, baseline, and feature count.
 Reusable state for the legacy resampled-time Dynamic-FPDE variant, with
 temporal prototypes, prototype labels, prototype length, feature count, mean
 anchor, zero anchor, alignment, and metadata.
+
+### `DynamicFPDEResult`
+
+Result object returned by `DynamicFPDEEngine.explain_one` and
+`DynamicFPDEEngine.explain_batch`. It stores the selected `method`,
+`target_class`, `rival_class`, scalar `evidence`, full concatenated
+`attributions`, group-specific raw/feature/`dt` attribution matrices,
+`time_attributions`, `group_attributions`, the boolean `mask`,
+`feature_slices`, and an `audit` dictionary for the attribution-sum identity.
 
 ### `DynamicFPDEExplanation`
 

@@ -7,7 +7,7 @@ from typing import Any, Dict, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ._array import _as_label_array, _safe_auc
+from .._array import _as_label_array, _safe_auc
 
 
 @dataclass(frozen=True)

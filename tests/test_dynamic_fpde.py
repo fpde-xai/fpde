@@ -4,8 +4,11 @@ import numpy as np
 import pytest
 
 from fpde import (
+    DynamicFPDEEngine,
     DynamicFPDEExplanation,
+    DynamicFPDEResult,
     NativeTimeDynamicFPDEExplanation,
+    PrototypeRawGenerator,
     dynamic_cos_fpde,
     dynamic_diff_fpde,
     dynamic_fpde_explain_batch,
@@ -16,11 +19,13 @@ from fpde import (
     native_dynamic_fpde_explain_batch,
     native_dynamic_fpde_explain_one,
     native_dynamic_hyb_fpde,
+    pad_sequences,
     plot_dynamic_attribution_heatmap,
     plot_dynamic_time_importance,
     prepare_dynamic_fpde_context,
     resample_time_series_linear,
     select_dynamic_lambda,
+    select_lambda_dynamic,
     temporal_deletion_insertion_curves,
 )
 
@@ -527,3 +532,147 @@ def test_dynamic_plotting_helpers_accept_native_explanations():
     assert [name for name, _, _ in time_ax.calls].count("bar") == 1
     assert plot_dynamic_attribution_heatmap(exp, ax=heatmap_ax) is heatmap_ax
     assert [name for name, _, _ in heatmap_ax.calls].count("imshow") == 1
+
+
+def test_rawfeat_pad_sequences_returns_boolean_mask():
+    padded, mask = pad_sequences([np.ones((2, 3)), np.full((4, 3), 2.0)])
+
+    assert padded.shape == (2, 4, 3)
+    assert mask.dtype == bool
+    np.testing.assert_array_equal(mask[0], [True, True, False, False])
+    np.testing.assert_allclose(padded[0, 2:], 0.0)
+
+
+def test_rawfeat_dynamic_fixed_length_raw_only_diff_exactness():
+    rng = np.random.default_rng(10)
+    raw = rng.normal(size=(6, 5, 2))
+    y = np.array(["a", "a", "a", "b", "b", "b"], dtype=object)
+
+    engine = DynamicFPDEEngine()
+    returned = engine.fit(raw=raw, y=y)
+    result = engine.explain_one(raw=raw[0], method="diff", target_class="a", rival_class="b")
+
+    assert returned is engine
+    assert isinstance(result, DynamicFPDEResult)
+    assert result.method == "diff"
+    assert result.attributions.shape == (5, 2)
+    assert result.raw_attributions.shape == (5, 2)
+    assert result.feature_attributions is None
+    assert result.evidence == pytest.approx(float(np.sum(result.attributions)))
+    assert result.audit["passed"] is True
+
+
+def test_rawfeat_dynamic_fixed_length_raw_and_features_group_exactness():
+    rng = np.random.default_rng(11)
+    raw = rng.normal(size=(8, 4, 2))
+    features = rng.normal(size=(8, 4, 3))
+    y = np.array([0, 1] * 4)
+
+    engine = DynamicFPDEEngine(lambda_hyb=0.25).fit(raw=raw, features=features, y=y)
+    result = engine.explain_one(raw=raw[0], features=features[0], method="hyb", target_class=0, rival_class=1)
+
+    assert result.raw_attributions.shape == (4, 2)
+    assert result.feature_attributions is not None
+    assert result.feature_attributions.shape == (4, 3)
+    assert result.dt_attributions is None
+    assert result.group_attributions["raw"] + result.group_attributions["features"] == pytest.approx(result.evidence)
+    assert result.audit["attribution_sum"] == pytest.approx(result.evidence)
+
+
+def test_rawfeat_dynamic_variable_length_padding_attributions_are_zero():
+    raw = [
+        np.array([[0.0], [0.2]], dtype=float),
+        np.array([[0.1], [0.3], [0.4], [0.5]], dtype=float),
+        np.array([[2.0], [2.1], [2.2]], dtype=float),
+        np.array([[1.9], [2.0], [2.1], [2.2]], dtype=float),
+    ]
+    y = np.array(["a", "a", "b", "b"], dtype=object)
+
+    engine = DynamicFPDEEngine().fit(raw=raw, y=y)
+    result = engine.explain_one(raw=raw[0], method="diff", target_class="a", rival_class="b")
+
+    assert result.attributions.shape == (4, 1)
+    np.testing.assert_array_equal(result.mask, [True, True, False, False])
+    np.testing.assert_allclose(result.attributions[~result.mask], 0.0)
+    np.testing.assert_allclose(result.time_attributions[~result.mask], 0.0)
+
+
+def test_rawfeat_dynamic_cos_and_hyb_exactness_and_zero_l1_stability():
+    raw = np.zeros((4, 3, 2), dtype=float)
+    raw[2:] = 1.0
+    y = np.array([0, 0, 1, 1])
+
+    engine = DynamicFPDEEngine(lambda_hyb=0.5).fit(raw=raw, y=y)
+    cos = engine.explain_one(raw=raw[0], method="cos", target_class=0, rival_class=1)
+    hyb = engine.explain_one(raw=raw[0], method="hyb", target_class=0, rival_class=1)
+    zero_hyb = DynamicFPDEEngine().fit(raw=np.zeros((4, 3, 2)), y=y).explain_one(
+        raw=np.zeros((3, 2)),
+        method="hyb",
+        target_class=0,
+        rival_class=1,
+    )
+
+    assert cos.evidence == pytest.approx(float(np.sum(cos.attributions)))
+    assert hyb.evidence == pytest.approx(float(np.sum(hyb.attributions)))
+    assert np.all(np.isfinite(zero_hyb.attributions))
+    np.testing.assert_allclose(zero_hyb.attributions, 0.0)
+    assert zero_hyb.evidence == pytest.approx(0.0)
+
+
+def test_rawfeat_dynamic_explain_batch_and_explicit_target_rival():
+    rng = np.random.default_rng(12)
+    raw = rng.normal(size=(6, 4, 2))
+    y = np.array(["a", "b", "a", "b", "a", "b"], dtype=object)
+
+    engine = DynamicFPDEEngine().fit(raw=raw, y=y)
+    results = engine.explain_batch(
+        raw=raw[:3],
+        method="diff",
+        target_classes=["a", "b", "a"],
+        rival_classes=["b", "a", "b"],
+    )
+
+    assert len(results) == 3
+    assert [result.target_class for result in results] == ["a", "b", "a"]
+    assert [result.rival_class for result in results] == ["b", "a", "b"]
+    assert all(result.evidence == pytest.approx(float(np.sum(result.attributions))) for result in results)
+
+
+def test_rawfeat_dynamic_predict_proba_priority_and_lambda_placeholder():
+    raw = np.array(
+        [
+            [[0.0], [0.1]],
+            [[1.0], [1.1]],
+            [[2.0], [2.1]],
+        ],
+        dtype=float,
+    )
+    engine = DynamicFPDEEngine().fit(raw=raw, y=["a", "b", "c"])
+
+    result = engine.explain_one(
+        raw=raw[0],
+        method="dynamic_diff",
+        predict_proba=[0.1, 0.8, 0.3],
+        class_names=["a", "b", "c"],
+    )
+    selection = select_lambda_dynamic(lambda_grid=[0.0, 0.5, 1.0])
+
+    assert result.method == "diff"
+    assert result.target_class == "b"
+    assert result.rival_class == "c"
+    assert selection["best_lambda"] == pytest.approx(0.5)
+    assert [row["status"] for row in selection["rows"]] == ["not_evaluated", "not_evaluated", "not_evaluated"]
+
+
+def test_prototype_raw_generator_generates_requested_length():
+    raw = [
+        np.array([[0.0, 0.1], [0.2, 0.3]], dtype=float),
+        np.array([[0.1, 0.0], [0.3, 0.2], [0.5, 0.4]], dtype=float),
+        np.array([[1.0, 1.1], [1.2, 1.3]], dtype=float),
+    ]
+
+    gen = PrototypeRawGenerator().fit(raw=raw, y=["a", "a", "b"])
+    generated = gen.generate(label="a", length=5, noise_scale=0.05, random_state=0)
+
+    assert generated.shape == (5, 2)
+    assert np.all(np.isfinite(generated))

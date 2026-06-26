@@ -3,6 +3,151 @@
 Dynamic-FPDE extends FPDE from fixed feature vectors to frame-level
 time-series feature matrices.
 
+RawFeat Dynamic-FPDE is the stateful engine for sequences that have raw values
+and, optionally, extracted feature sequences on the same time axis. It accepts
+fixed-length arrays and variable-length lists, pads variable-length inputs
+internally, and keeps an explicit mask so padding never contributes evidence.
+
+```python
+import numpy as np
+from fpde.dynamic import DynamicFPDEEngine
+
+raw = np.random.randn(20, 50, 3)
+features = np.random.randn(20, 50, 5)
+y = np.array([0, 1] * 10)
+
+engine = DynamicFPDEEngine(lambda_hyb=0.5)
+engine.fit(raw=raw, features=features, y=y)
+
+result = engine.explain_one(
+    raw=raw[0],
+    features=features[0],
+    method="hyb",
+    target_class=0,
+    rival_class=1,
+)
+
+print(result.evidence)
+print(result.time_attributions.shape)
+print(result.raw_attributions.shape)
+print(result.feature_attributions.shape)
+print(result.audit)
+```
+
+For variable-length inputs, pass lists of arrays:
+
+```python
+raw_list = [
+    np.random.randn(30, 3),
+    np.random.randn(45, 3),
+    np.random.randn(60, 3),
+]
+feat_list = [
+    np.random.randn(30, 5),
+    np.random.randn(45, 5),
+    np.random.randn(60, 5),
+]
+y = np.array([0, 1, 0])
+
+engine = DynamicFPDEEngine()
+engine.fit(raw=raw_list, features=feat_list, y=y)
+
+result = engine.explain_one(
+    raw=raw_list[0],
+    features=feat_list[0],
+    method="diff",
+    target_class=0,
+    rival_class=1,
+)
+```
+
+## RawFeat Representation And Masking
+
+RawFeat Dynamic-FPDE uses the concatenated representation directly:
+
+```text
+u_t = concat(raw_t, features_t, dt_t)
+```
+
+`features` and `dt` are optional. In v1 there is no deep encoder; the engine
+stores this tensor as `representation_` so a future encoder can be introduced
+without changing the public result layout. Variable-length inputs are padded to
+`T_max`, and mask entries with value `False` force representation values,
+attributions, and time attributions to zero.
+
+Class prototypes are mask-weighted temporal means:
+
+```text
+p[k, t] = mean_i u[i, t] for y[i] = k and mask[i, t] = True
+```
+
+If no sample is valid for a class at a time step, the prototype row stays zero.
+
+## RawFeat Dynamic-Diff, Cos, And Hyb
+
+Dynamic-Diff decomposes the squared-distance prototype contrast:
+
+```text
+Phi_diff[t, j] =
+    mask[t] * ((u[t, j] - p_rival[t, j])**2
+             - (u[t, j] - p_target[t, j])**2)
+
+E_diff = sum(Phi_diff)
+```
+
+Dynamic-Cos subtracts the training mean anchor and uses regularized norms:
+
+```text
+z_t       = u_t - anchor_t
+q_target = p_target,t - anchor_t
+q_rival  = p_rival,t  - anchor_t
+
+Phi_cos[t, j] =
+    mask[t] * z[t, j] * q_target[j] / (N(z_t) * N(q_target))
+  - mask[t] * z[t, j] * q_rival[j]  / (N(z_t) * N(q_rival))
+```
+
+Dynamic-Hyb L1-normalizes Diff and Cos attribution matrices. If a component
+has near-zero L1 mass, that component becomes a zero matrix:
+
+```text
+Phi_hyb = lambda_hyb * L1(Phi_diff)
+        + (1 - lambda_hyb) * L1(Phi_cos)
+
+E_hyb = sum(Phi_hyb)
+```
+
+Every `DynamicFPDEResult` includes an `audit` dictionary with
+`attribution_sum`, `evidence`, `abs_error`, and `passed`. The engine computes
+evidence from the attribution sum, so `evidence == attributions.sum()` is the
+auditable identity for Diff, Cos, and Hyb.
+
+`raw_attributions`, `feature_attributions`, and `dt_attributions` are views of
+the same concatenated attribution matrix. `group_attributions` sums those
+groups as `raw`, `features`, and `dt`.
+
+## PrototypeRawGenerator
+
+`PrototypeRawGenerator` is a baseline label-conditioned raw generator. It is
+not the main explanation method and is not called by `DynamicFPDEEngine`.
+It stores label-wise raw prototypes, interpolates them to the requested length,
+and can add residual-scale noise.
+
+```python
+from fpde.dynamic import PrototypeRawGenerator
+
+gen = PrototypeRawGenerator()
+gen.fit(raw=raw_list, y=y)
+
+generated = gen.generate(label=0, length=100, noise_scale=0.05, random_state=0)
+assert generated.shape == (100, 3)
+```
+
+The `condition_features` argument is accepted for API stability. It is a future
+hook for conditional VAE, diffusion, or seq2seq generators.
+
+## Native-Time Dynamic-FPDE
+
 Native-Time Dynamic-FPDE is the intended Dynamic-FPDE formulation for
 variable-length music and cover-song analysis. It preserves each input clip's
 native frame-level time axis and computes a time-feature prototype-evidence
