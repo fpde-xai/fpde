@@ -385,15 +385,34 @@ zero-filled.
 ```python
 from fpde.dynamic import PrototypeRawGenerator
 
-gen = PrototypeRawGenerator().fit(raw=raw_list, features=feature_list, y=y)
+gen = PrototypeRawGenerator(summary_scaling="standard").fit(
+    raw=raw_list,
+    features=feature_list,
+    y=y,
+)
 generated = gen.generate(
     label=0,
     length=100,
     condition_features=desired_features,
+    condition_mask=desired_mask,
     noise_scale=0.05,
     random_state=0,
 )
 ```
+
+#### `PrototypeRawGenerator(summary_scaling="standard")`
+
+Configures the feature-summary distance space used for conditioned nearest
+neighbors:
+
+- `"standard"` subtracts the training-summary mean and divides by its standard
+  deviation. This is the default.
+- `"robust"` subtracts the median and divides by the interquartile range.
+- `"none"` uses unscaled summaries and preserves the Phase 4 distance
+  behavior.
+
+Constant and near-constant dimensions use a scale of `1.0`. Unknown strategies
+raise `ValueError`.
 
 #### `fit(raw, y, features=None, mask=None)`
 
@@ -404,7 +423,7 @@ valid-time mean, standard deviation, minimum, and maximum, so its dimension is
 `4 * C_feat`. Variable-length lists and explicit masks are supported. NaN and
 infinite raw or feature values raise `ValueError`.
 
-#### `generate(label, length=None, condition_features=None, noise_scale=0.0, random_state=None)`
+#### `generate(label, length=None, condition_features=None, condition_mask=None, noise_scale=0.0, random_state=None)`
 
 Returns an array with shape `(length, C_raw)`. If `length` is omitted, the
 longest valid training length for the label is used.
@@ -412,6 +431,9 @@ longest valid training length for the label is used.
 - `condition_features=None` interpolates the label raw prototype.
 - A 2D `(T_cond, C_feat)` condition is summarized over all time steps.
 - A 1D condition must be a precomputed `(4 * C_feat,)` summary.
+- `condition_mask` is accepted only with a 2D condition. It is normalized to a
+  boolean `(T_cond,)` array, and false time steps are excluded from the
+  summary. Shape mismatches and all-false masks raise `ValueError`.
 - Conditions require `features` during `fit`; otherwise generation raises
   `ValueError`.
 - `noise_scale > 0` adds label residual-scale Gaussian noise. A fixed
@@ -434,18 +456,32 @@ Accepts the same arguments as `generate` and returns:
     "conditioned": True,
     "selected_neighbor_index": 12,
     "selected_neighbor_distance": 0.37,
+    "condition_summary": condition_summary,
+    "scaled_condition_summary": scaled_condition_summary,
+    "summary_scaling": "standard",
+    "selected_neighbor_label": label,
+    "selected_neighbor_length": 80,
+    "selected_neighbor_summary_distance": 0.37,
+    "residual_norm": 2.4,
+    "prototype_norm": 9.1,
+    "generated_norm": 9.7,
     "noise_scale": 0.05,
 }
 ```
 
 For label-only generation, `conditioned` is `False` and both neighbor fields
-are `None`.
+are `None`; condition summaries are also `None` and `residual_norm` is `0.0`.
+`selected_neighbor_distance` is retained for compatibility and equals
+`selected_neighbor_summary_distance`, measured in the configured scaled
+summary space.
 
 `PrototypeRawGenerator` is a numpy-only nearest-neighbor residual baseline. It
 is not a conditional VAE, diffusion model, seq2seq model, or the main
 generative component of FPDE. `DynamicFPDEEngine` does not invoke it
 automatically; recompute features from generated raw data externally before
-passing both arrays to `explain_one`.
+passing both arrays to `explain_one`. The generator reuses training residuals,
+so generated outputs require the same privacy and data-leakage review as other
+nearest-neighbor or retrieval-based methods.
 
 ### `select_lambda_dynamic`
 
@@ -673,8 +709,9 @@ generator(label, lambda_hyb, segment, sample_rate, role, metadata)
 ```
 
 It is called only after Raw-Hyb evidence has been computed and top segments
-have been selected. FPDE does not include a built-in label-conditioned raw
-audio generator.
+have been selected. The Raw-Waveform API does not include a built-in
+label-conditioned audio generator and does not automatically adapt
+`PrototypeRawGenerator` to this callback.
 
 ```python
 raw_diff_fpde(window, p_target, p_rival, *, mask=None, target_mask=None, rival_mask=None)

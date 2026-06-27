@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import runpy
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -972,6 +975,130 @@ def test_prototype_raw_generator_rejects_invalid_condition_inputs():
         gen.generate(label="missing", condition_features=np.ones((3, 1)))
     with pytest.raises(ValueError, match="length"):
         gen.generate(label="a", length=0, condition_features=np.ones((3, 1)))
+
+
+def test_prototype_raw_generator_condition_mask_controls_summary():
+    gen, _ = _conditional_generator_fixture()
+    condition = np.array([[0.0], [10.0]], dtype=float)
+
+    low = gen.generate(
+        label="a",
+        condition_features=condition,
+        condition_mask=[True, False],
+    )
+    high = gen.generate(
+        label="a",
+        condition_features=condition,
+        condition_mask=[False, True],
+    )
+    masked_value_changed = gen.generate(
+        label="a",
+        condition_features=np.array([[0.0], [np.nan]]),
+        condition_mask=[True, False],
+    )
+
+    assert not np.array_equal(low, high)
+    np.testing.assert_allclose(low, masked_value_changed)
+
+
+def test_prototype_raw_generator_rejects_invalid_condition_mask():
+    gen, _ = _conditional_generator_fixture()
+
+    with pytest.raises(ValueError, match="at least one True"):
+        gen.generate(
+            label="a",
+            condition_features=np.ones((3, 1)),
+            condition_mask=[False, False, False],
+        )
+    with pytest.raises(ValueError, match="shape mismatch"):
+        gen.generate(
+            label="a",
+            condition_features=np.ones((3, 1)),
+            condition_mask=[True, False],
+        )
+    with pytest.raises(ValueError, match="only valid for 2D"):
+        gen.generate(
+            label="a",
+            condition_features=gen.training_feature_summaries_[0],
+            condition_mask=[True],
+        )
+
+
+@pytest.mark.parametrize("strategy", ["none", "standard", "robust"])
+def test_prototype_raw_generator_summary_scaling_strategies(strategy):
+    raw = np.array(
+        [
+            [[0.0], [1.0], [0.0]],
+            [[2.0], [1.0], [2.0]],
+            [[4.0], [4.0], [4.0]],
+        ]
+    )
+    features = np.array(
+        [
+            [[1.0, 5.0], [1.0, 5.0], [1.0, 5.0]],
+            [[2.0, 5.0], [2.0, 5.0], [2.0, 5.0]],
+            [[8.0, 5.0], [8.0, 5.0], [8.0, 5.0]],
+        ]
+    )
+    gen = PrototypeRawGenerator(summary_scaling=strategy).fit(
+        raw=raw,
+        features=features,
+        y=["a", "a", "b"],
+    )
+
+    metadata = gen.generate_with_metadata(
+        label="a",
+        condition_features=features[0],
+    )
+
+    assert metadata["summary_scaling"] == strategy
+    assert np.all(np.isfinite(metadata["scaled_condition_summary"]))
+    assert np.isfinite(metadata["selected_neighbor_distance"])
+    assert np.all(np.isfinite(gen.summary_scale_))
+    assert np.all(gen.summary_scale_ > 0.0)
+
+
+def test_prototype_raw_generator_rejects_unknown_summary_scaling():
+    with pytest.raises(ValueError, match="summary_scaling"):
+        PrototypeRawGenerator(summary_scaling="unknown")
+
+
+def test_prototype_raw_generator_extended_metadata_is_finite():
+    gen, features = _conditional_generator_fixture()
+    metadata = gen.generate_with_metadata(
+        label="a",
+        length=5,
+        condition_features=features[0],
+    )
+    expected = {
+        "condition_summary",
+        "scaled_condition_summary",
+        "summary_scaling",
+        "selected_neighbor_label",
+        "selected_neighbor_length",
+        "selected_neighbor_summary_distance",
+        "residual_norm",
+        "prototype_norm",
+        "generated_norm",
+    }
+
+    assert expected <= metadata.keys()
+    assert metadata["selected_neighbor_label"] == "a"
+    assert metadata["selected_neighbor_length"] == 3
+    assert np.isfinite(metadata["selected_neighbor_summary_distance"])
+    assert np.isfinite(metadata["generated_norm"])
+    assert np.isfinite(metadata["residual_norm"])
+    assert np.isfinite(metadata["prototype_norm"])
+
+
+def test_dynamic_rawfeat_generation_example_smoke(capsys):
+    example = Path(__file__).parents[1] / "examples" / "dynamic_fpde_rawfeat_generation.py"
+
+    runpy.run_path(str(example), run_name="__main__")
+
+    output = capsys.readouterr().out
+    assert "Generated evidence:" in output
+    assert "Generation metadata:" in output
 
 
 def _probabilities_from_raw_mean(raw, features=None, dt=None, mask=None):

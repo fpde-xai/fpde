@@ -143,8 +143,9 @@ groups as `raw`, `features`, and `dt`.
 
 ## PrototypeRawGenerator
 
-`PrototypeRawGenerator` is a baseline label-conditioned raw generator. It is
-not the main explanation method and is not called by `DynamicFPDEEngine`.
+`PrototypeRawGenerator` is a baseline label and feature-conditioned raw
+generator. It is not the main explanation method and is not called by
+`DynamicFPDEEngine`.
 It stores label-wise raw prototypes, interpolates them to the requested length,
 and can add residual-scale noise. When features are supplied to `fit`, it can
 also select a same-label training residual from a requested feature condition.
@@ -152,7 +153,7 @@ also select a same-label training residual from a requested feature condition.
 ```python
 from fpde.dynamic import PrototypeRawGenerator
 
-gen = PrototypeRawGenerator()
+gen = PrototypeRawGenerator(summary_scaling="standard")
 gen.fit(raw=raw_list, features=feature_list, y=y)
 
 generated = gen.generate(
@@ -174,6 +175,38 @@ sample's raw residual to the requested length, and adds it to the label raw
 prototype. Passing a condition after fitting without features raises
 `ValueError`.
 
+For a 2D condition, pass `condition_mask` to exclude invalid or padded time
+steps from all four summary statistics:
+
+```python
+generated = gen.generate(
+    label=0,
+    condition_features=desired_features,
+    condition_mask=desired_mask,  # shape: (T_cond,)
+)
+```
+
+The mask is converted to boolean, must match `T_cond`, and must contain at
+least one `True` value. It is not accepted with an already summarized 1D
+condition.
+
+### Scale feature summaries
+
+Feature-summary dimensions can have very different units. Configure the
+distance space when constructing the generator:
+
+| `summary_scaling` | Distance space |
+| --- | --- |
+| `"standard"` | Mean-centered and divided by training-summary standard deviation. This is the default. |
+| `"robust"` | Median-centered and divided by training-summary interquartile range. |
+| `"none"` | Unscaled summary values, matching the Phase 4 distance behavior. |
+
+Zero or near-zero scale dimensions use a scale of `1.0`. Scaling statistics
+are fit across all training summaries; nearest-neighbor candidates are still
+restricted to the requested label. Use `"robust"` when summary outliers would
+distort standard scaling, and `"none"` only when raw feature units already
+encode the desired distance weighting.
+
 Use `generate_with_metadata` to inspect which training sample supplied the
 residual:
 
@@ -188,11 +221,31 @@ neighbor_index = generated["selected_neighbor_index"]
 neighbor_distance = generated["selected_neighbor_distance"]
 ```
 
+Metadata also includes the raw and scaled condition summaries, scaling
+strategy, selected neighbor label and length, the scaled-summary distance, and
+finite residual, prototype, and generated sequence norms.
+
 ### Audit generated raw sequences
 
 Generated raw sequences can be passed to RawFeat Dynamic-FPDE after you
-recompute their extracted features with the same external feature pipeline
-used for training:
+recompute their extracted features with the same external feature extractor
+used for training. Do not reuse `condition_features` as if they were features
+extracted from the generated raw sequence.
+
+```mermaid
+flowchart LR
+    A["Variable-length training RAW"] --> B["External feature extractor"]
+    A --> C["DynamicFPDEEngine.fit"]
+    B --> C
+    A --> D["PrototypeRawGenerator.fit"]
+    B --> D
+    E["Desired features and optional mask"] --> F["PrototypeRawGenerator.generate"]
+    D --> F
+    F --> G["Generated RAW"]
+    G --> H["Same external feature extractor"]
+    G --> I["DynamicFPDEEngine.explain_one"]
+    H --> I
+```
 
 ```python
 from fpde.dynamic import DynamicFPDEEngine, PrototypeRawGenerator
@@ -230,7 +283,13 @@ result = engine.explain_one(
 This conditioning gives more shape control than label-only prototype
 generation, but it remains a nearest-neighbor baseline. It is not a
 conditional VAE, diffusion model, seq2seq model, or the package's main
-generative model.
+generative model. Because it directly reuses a training sample's raw residual,
+generated sequences can retain sample-specific information. Evaluate privacy,
+memorization, and train/test leakage risks before sharing generated outputs or
+using them in downstream evaluation.
+
+Run the complete numpy-only example in
+[`examples/dynamic_fpde_rawfeat_generation.py`](../examples/dynamic_fpde_rawfeat_generation.py).
 
 ## Dynamic Lambda Selection
 
