@@ -63,6 +63,66 @@ result = engine.explain_one(
 )
 ```
 
+## Bayesian RawFeat Prototype Posterior
+
+The Bayesian RawFeat extension quantifies how Dynamic-FPDE prototype evidence
+changes when the training samples used to form the Like and Dislike
+prototypes are bootstrapped. It is a prototype-evidence decomposition. It is
+not a causal explanation, ground-truth attribution, or proof of black-box
+classifier faithfulness.
+
+```python
+from fpde.dynamic import (
+    RawFeatSequence,
+    bayesian_rawfeat_dynamic_fpde_explain_one,
+    fit_bayesian_rawfeat_prototypes,
+)
+
+train = [
+    RawFeatSequence(raw=r, features=f, dt=d, mask=m)
+    for r, f, d, m in training_samples
+]
+posterior = fit_bayesian_rawfeat_prototypes(
+    train,
+    labels,
+    n_samples=500,
+    prototype_stat="median",
+    random_state=0,
+)
+result = bayesian_rawfeat_dynamic_fpde_explain_one(
+    train[0],
+    posterior,
+    target_label="Like",
+    rival_label="Dislike",
+    lambda_hyb=selected_lambda_draws,
+)
+
+print(result.hyb.posterior_mean)
+print(result.hyb.evidence.credible_interval)
+print(result.hyb.raw_group_attribution.mean)
+```
+
+For every sample, `build_rawfeat_matrix` constructs
+`X = concat(raw, features, dt[:, None])` with shape `(T, D)`. Only valid frames
+contribute to prototype fitting and explanation, and the native length `T` is
+preserved; this path performs no global temporal resampling.
+
+The reported 2.5%/97.5% intervals, `probability_positive`, and
+`sign_stability` values are attribution uncertainty diagnostics. Their
+uncertainty comes from the bootstrap prototype posterior and, when one
+`lambda_hyb` value is supplied per posterior draw, lambda selection. They do
+not turn the attribution into a causal estimand. `sign_stability` is the larger
+of the posterior positive and negative proportions; a posterior concentrated
+at exactly zero therefore has stability zero.
+
+Raw frame blocks often contain many more coordinates than acoustic feature
+blocks. Group-scale raw, acoustic-feature, and `dt` dimensions before fitting
+when their numerical scales or dimensionalities differ; otherwise the raw
+frame dimensionality can dominate the prototype distances and group totals.
+Each method summary reports `raw_group_attribution`,
+`feature_group_attribution`, and `dt_group_attribution`, as well as the full
+evidence posterior and per-draw exactness residuals.
+
 ## RawFeat Representation And Masking
 
 RawFeat Dynamic-FPDE uses the concatenated representation directly:

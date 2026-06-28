@@ -303,6 +303,56 @@ uses raw waveform arrays and labels only; it does not extract acoustic
 features, spectrograms, or MFCCs, and it does not normalize waveform
 amplitudes.
 
+### Bayesian RawFeat Dynamic-FPDE
+
+```python
+from fpde.dynamic import (
+    RawFeatSequence,
+    build_rawfeat_matrix,
+    fit_bayesian_rawfeat_prototypes,
+    bayesian_rawfeat_dynamic_fpde_explain_one,
+)
+
+sequence = RawFeatSequence(raw=raw, features=features, dt=dt, mask=mask)
+X = build_rawfeat_matrix(sequence)
+posterior = fit_bayesian_rawfeat_prototypes(
+    training_sequences,
+    labels,
+    n_samples=500,
+    prototype_stat="median",
+    random_state=0,
+)
+result = bayesian_rawfeat_dynamic_fpde_explain_one(
+    sequence,
+    posterior,
+    target_label="Like",
+    rival_label="Dislike",
+    lambda_hyb=0.5,
+)
+```
+
+`RawFeatSequence` requires `raw: (T, frame_length)`, `features: (T, F)`,
+`dt: (T,)`, and `mask: (T,)`. `build_rawfeat_matrix` validates these inputs
+and returns `(T, frame_length + F + 1)` without temporal resampling. Non-finite
+values are rejected on valid frames; invalid frames are zeroed.
+
+`fit_bayesian_rawfeat_prototypes` resamples each label's training samples with
+replacement and builds one vector prototype per label and posterior draw from
+valid frames. `prototype_stat` supports `"median"` (default) and `"mean"`.
+
+`bayesian_rawfeat_dynamic_fpde_explain_one` evaluates native-time Dynamic-Diff,
+Dynamic-Cos, and Dynamic-Hyb for every draw. Each method exposes posterior
+means, 2.5%/97.5% credible-interval arrays, `probability_positive`,
+`sign_stability`, the evidence posterior, exactness residuals, and posterior
+summaries for raw, feature, and `dt` attribution groups. A scalar
+`lambda_hyb` applies to all draws; an `(n_samples,)` array propagates lambda
+selection uncertainty.
+
+These outputs diagnose uncertainty in prototype-evidence decomposition. They
+are not causal explanations or ground-truth attributions. Group-scale the
+RawFeat blocks when needed so raw-frame dimensionality does not dominate the
+acoustic feature block.
+
 ### `DynamicFPDEEngine`
 
 ```python
