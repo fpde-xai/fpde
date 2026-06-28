@@ -320,6 +320,8 @@ posterior = fit_bayesian_rawfeat_prototypes(
     labels,
     n_samples=500,
     prototype_stat="median",
+    scaling="group_l2",
+    frame_weighting="sample_equal",
     random_state=0,
 )
 result = bayesian_rawfeat_dynamic_fpde_explain_one(
@@ -339,6 +341,20 @@ values are rejected on valid frames; invalid frames are zeroed.
 `fit_bayesian_rawfeat_prototypes` resamples each label's training samples with
 replacement and builds one vector prototype per label and posterior draw from
 valid frames. `prototype_stat` supports `"median"` (default) and `"mean"`.
+`frame_weighting="frame_equal"` pools all valid frames, so longer sequences
+have more influence. `"sample_equal"` reduces each sampled sequence first and
+then weights the resulting vectors equally; it is the recommended setting for
+song-level Like/Dislike labels.
+
+Raw frames, acoustic features, and `dt` have substantially different
+dimensionalities and scales, so RawFeat analysis requires group scaling unless
+an equivalent transformation was already performed. `scaling` supports
+`"group_l1"`, `"group_l2"`, `"standard"`, and backward-compatible `"none"`.
+The group modes divide each block by its mean valid-training-frame norm;
+standard scaling uses coordinate-wise training means and standard deviations.
+Parameters are fitted only on training valid frames, stored in
+`posterior.scaling`, and applied unchanged to explanation inputs. Scaling does
+not resample time or change masks.
 
 `bayesian_rawfeat_dynamic_fpde_explain_one` evaluates native-time Dynamic-Diff,
 Dynamic-Cos, and Dynamic-Hyb for every draw. Each method exposes posterior
@@ -349,9 +365,7 @@ summaries for raw, feature, and `dt` attribution groups. A scalar
 selection uncertainty.
 
 These outputs diagnose uncertainty in prototype-evidence decomposition. They
-are not causal explanations or ground-truth attributions. Group-scale the
-RawFeat blocks when needed so raw-frame dimensionality does not dominate the
-acoustic feature block.
+are not causal explanations or ground-truth attributions.
 
 ### `DynamicFPDEEngine`
 

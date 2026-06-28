@@ -87,6 +87,8 @@ posterior = fit_bayesian_rawfeat_prototypes(
     labels,
     n_samples=500,
     prototype_stat="median",
+    scaling="group_l2",
+    frame_weighting="sample_equal",
     random_state=0,
 )
 result = bayesian_rawfeat_dynamic_fpde_explain_one(
@@ -115,10 +117,25 @@ not turn the attribution into a causal estimand. `sign_stability` is the larger
 of the posterior positive and negative proportions; a posterior concentrated
 at exactly zero therefore has stability zero.
 
-Raw frame blocks often contain many more coordinates than acoustic feature
-blocks. Group-scale raw, acoustic-feature, and `dt` dimensions before fitting
-when their numerical scales or dimensionalities differ; otherwise the raw
-frame dimensionality can dominate the prototype distances and group totals.
+Raw frame blocks contain many more coordinates than acoustic feature and `dt`
+blocks, and the blocks also use very different numerical scales. Group scaling
+is therefore required for meaningful RawFeat comparisons unless the caller has
+already applied an equivalent training-fitted transformation. Use
+`scaling="group_l1"` or `"group_l2"` to divide every block by its mean
+training-frame L1 or L2 norm. `"standard"` applies coordinate-wise training
+mean and standard-deviation scaling, while `"none"` preserves the unscaled
+representation for backward compatibility. Scaling parameters use training
+valid frames only, are stored in the posterior, and are reused unchanged for
+explanation inputs. Masks and native time lengths are unaffected.
+
+`frame_weighting="frame_equal"` pools valid frames after sample bootstrap and
+therefore gives longer sequences more prototype weight. This is the historical
+behavior. `frame_weighting="sample_equal"` first summarizes each sampled
+sequence over its valid frames and then gives those summaries equal weight.
+Use `sample_equal` for song-level Like/Dislike preference labels so song
+duration does not determine prototype influence. Both modes preserve the
+sample-level bootstrap.
+
 Each method summary reports `raw_group_attribution`,
 `feature_group_attribution`, and `dt_group_attribution`, as well as the full
 evidence posterior and per-draw exactness residuals.

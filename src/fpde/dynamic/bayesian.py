@@ -36,6 +36,19 @@ class RawFeatSequence:
     mask: np.ndarray
 
 
+RawFeatScalingMode = Literal["none", "group_l1", "group_l2", "standard"]
+RawFeatFrameWeighting = Literal["frame_equal", "sample_equal"]
+
+
+@dataclass(frozen=True)
+class RawFeatScaling:
+    """Training-fitted affine scaling for concatenated RawFeat coordinates."""
+
+    mode: RawFeatScalingMode
+    offset: np.ndarray
+    scale: np.ndarray
+
+
 @dataclass(frozen=True)
 class BayesianRawFeatPrototypePosterior:
     """Bootstrap draws of one feature-vector prototype per class."""
@@ -45,6 +58,8 @@ class BayesianRawFeatPrototypePosterior:
     feature_slices: Dict[str, slice]
     prototype_stat: str
     class_counts: Dict[Any, int]
+    scaling: RawFeatScaling
+    frame_weighting: RawFeatFrameWeighting
 
     @property
     def n_samples(self) -> int:
@@ -115,7 +130,10 @@ class BayesianRawFeatDynamicFPDEResult:
         return self.hyb
 
 
-def build_rawfeat_matrix(sequence: RawFeatSequence) -> np.ndarray:
+def build_rawfeat_matrix(
+    sequence: RawFeatSequence,
+    scaling: RawFeatScaling | None = None,
+) -> np.ndarray:
     """Validate and concatenate one RawFeat sample without resampling time.
 
     Non-finite values are rejected on valid frames.  Invalid frames are
@@ -152,6 +170,20 @@ def build_rawfeat_matrix(sequence: RawFeatSequence) -> np.ndarray:
     matrix = np.concatenate((raw, features, dt[:, None]), axis=1)
     matrix = matrix.astype(float, copy=True)
     matrix[~valid] = 0.0
+    if scaling is not None:
+        if not isinstance(scaling, RawFeatScaling):
+            raise TypeError("scaling must be a RawFeatScaling or None")
+        if scaling.offset.shape != (matrix.shape[1],) or scaling.scale.shape != (matrix.shape[1],):
+            raise ValueError(
+                f"scaling dimension mismatch: expected {(matrix.shape[1],)}, "
+                f"got offset={scaling.offset.shape}, scale={scaling.scale.shape}"
+            )
+        if not np.all(np.isfinite(scaling.offset)) or not np.all(np.isfinite(scaling.scale)):
+            raise ValueError("scaling parameters must be finite")
+        if np.any(scaling.scale <= 0.0):
+            raise ValueError("scaling scale values must be positive")
+        matrix[valid] = (matrix[valid] - scaling.offset) / scaling.scale
+        matrix[~valid] = 0.0
     return matrix
 
 
@@ -165,18 +197,69 @@ def _feature_slices(sequence: RawFeatSequence) -> Dict[str, slice]:
     }
 
 
+def fit_rawfeat_scaling(
+    sequences: Sequence[RawFeatSequence],
+    scaling: RawFeatScalingMode = "none",
+) -> RawFeatScaling:
+    """Fit RawFeat scaling parameters from training valid frames only.
+
+    ``group_l1`` and ``group_l2`` give each RawFeat block unit mean per-frame
+    norm. ``standard`` performs coordinate-wise centering and standardization.
+    Degenerate scales are replaced by one to keep constant inputs finite.
+    """
+    if scaling not in ("none", "group_l1", "group_l2", "standard"):
+        raise ValueError("scaling must be 'none', 'group_l1', 'group_l2', or 'standard'")
+    items = list(sequences)
+    if not items:
+        raise ValueError("sequences must contain at least one sample")
+    matrices = [build_rawfeat_matrix(item) for item in items]
+    masks = [np.asarray(item.mask, dtype=bool) for item in items]
+    slices = _feature_slices(items[0])
+    dimension = int(matrices[0].shape[1])
+    valid_parts = []
+    for i, (item, matrix, mask) in enumerate(zip(items, matrices, masks)):
+        if matrix.shape[1] != dimension or _feature_slices(item) != slices:
+            raise ValueError(f"RawFeat group dimensions differ at sequences[{i}]")
+        if not np.any(mask):
+            raise ValueError(f"sequences[{i}] has no valid frames")
+        valid_parts.append(matrix[mask])
+    valid_frames = np.concatenate(valid_parts, axis=0)
+    offset = np.zeros(dimension, dtype=float)
+    scale = np.ones(dimension, dtype=float)
+    if scaling == "standard":
+        offset = np.mean(valid_frames, axis=0)
+        scale = np.std(valid_frames, axis=0)
+        scale[scale <= np.finfo(float).eps] = 1.0
+    elif scaling in ("group_l1", "group_l2"):
+        for group_slice in slices.values():
+            group = valid_frames[:, group_slice]
+            if scaling == "group_l1":
+                norms = np.sum(np.abs(group), axis=1)
+            else:
+                norms = np.linalg.norm(group, axis=1)
+            group_scale = float(np.mean(norms))
+            if not np.isfinite(group_scale) or group_scale <= np.finfo(float).eps:
+                group_scale = 1.0
+            scale[group_slice] = group_scale
+    return RawFeatScaling(mode=scaling, offset=offset, scale=scale)
+
+
 def fit_bayesian_rawfeat_prototypes(
     sequences: Sequence[RawFeatSequence],
     labels: Sequence[Any],
     n_samples: int,
     prototype_stat: Literal["median", "mean"] = "median",
     random_state: int | np.random.Generator | None = None,
+    *,
+    scaling: RawFeatScalingMode = "none",
+    frame_weighting: RawFeatFrameWeighting = "frame_equal",
 ) -> BayesianRawFeatPrototypePosterior:
     """Fit a class-prototype posterior by bootstrapping training samples.
 
     Within each posterior draw, each class's training samples are sampled with
-    replacement and all of their valid native-time frames contribute to the
-    requested coordinate-wise prototype statistic.
+    replacement. ``frame_equal`` pools their valid frames, while
+    ``sample_equal`` first summarizes each sampled sequence so every sampled
+    training item has equal weight regardless of native duration.
     """
     items = list(sequences)
     if not items:
@@ -186,11 +269,14 @@ def fit_bayesian_rawfeat_prototypes(
         raise ValueError("n_samples must be positive")
     if prototype_stat not in ("median", "mean"):
         raise ValueError("prototype_stat must be 'median' or 'mean'")
+    if frame_weighting not in ("frame_equal", "sample_equal"):
+        raise ValueError("frame_weighting must be 'frame_equal' or 'sample_equal'")
     y = _as_label_array(labels)
     if y.shape[0] != len(items):
         raise ValueError(f"number of sequences and labels differ: {len(items)} vs {y.shape[0]}")
 
-    matrices = [build_rawfeat_matrix(item) for item in items]
+    scaling_parameters = fit_rawfeat_scaling(items, scaling=scaling)
+    matrices = [build_rawfeat_matrix(item, scaling=scaling_parameters) for item in items]
     masks = [np.asarray(item.mask, dtype=bool) for item in items]
     slices = _feature_slices(items[0])
     dimension = int(matrices[0].shape[1])
@@ -214,8 +300,12 @@ def fit_bayesian_rawfeat_prototypes(
         class_counts[label] = int(indices.size)
         for draw in range(n_draws):
             sampled = rng.choice(indices, size=indices.size, replace=True)
-            valid_frames = np.concatenate([matrices[i][masks[i]] for i in sampled.tolist()], axis=0)
-            prototypes[draw, class_idx] = reducer(valid_frames, axis=0)
+            sampled_frames = [matrices[i][masks[i]] for i in sampled.tolist()]
+            if frame_weighting == "frame_equal":
+                prototype_values = np.concatenate(sampled_frames, axis=0)
+            else:
+                prototype_values = np.stack([reducer(frames, axis=0) for frames in sampled_frames], axis=0)
+            prototypes[draw, class_idx] = reducer(prototype_values, axis=0)
 
     return BayesianRawFeatPrototypePosterior(
         prototypes=prototypes,
@@ -223,6 +313,8 @@ def fit_bayesian_rawfeat_prototypes(
         feature_slices=dict(slices),
         prototype_stat=prototype_stat,
         class_counts=class_counts,
+        scaling=scaling_parameters,
+        frame_weighting=frame_weighting,
     )
 
 
@@ -299,6 +391,7 @@ def bayesian_rawfeat_dynamic_fpde_explain_one(
         )
     if _feature_slices(sequence) != posterior.feature_slices:
         raise ValueError("input RawFeat group dimensions differ from the fitted posterior")
+    X = build_rawfeat_matrix(sequence, scaling=posterior.scaling)
     if target_label == rival_label:
         raise ValueError("target_label and rival_label must differ")
     target_idx = _label_index(posterior, target_label, "target_label")
@@ -371,11 +464,15 @@ def bayesian_rawfeat_dynamic_fpde_explain_one(
 
 __all__ = [
     "RawFeatSequence",
+    "RawFeatScalingMode",
+    "RawFeatFrameWeighting",
+    "RawFeatScaling",
     "BayesianRawFeatPrototypePosterior",
     "PosteriorScalarSummary",
     "BayesianRawFeatMethodSummary",
     "BayesianRawFeatDynamicFPDEResult",
     "build_rawfeat_matrix",
+    "fit_rawfeat_scaling",
     "fit_bayesian_rawfeat_prototypes",
     "bayesian_rawfeat_dynamic_fpde_explain_one",
 ]
