@@ -615,6 +615,8 @@ Phi_diff[t, f] = (X[t, f] - p_rival[f])**2
 ```
 
 Returns `(Phi_diff, E_diff)`, where `Phi_diff.shape == X.shape`.
+Uses a numerically stable difference of squares. A result outside finite
+float64 range raises `FloatingPointError`.
 
 ### `native_dynamic_cos_fpde`
 
@@ -625,6 +627,9 @@ native_dynamic_cos_fpde(X, p_target, p_rival, *, anchor=None, eps=1e-12)
 Computes a native-time coordinate decomposition of the cosine contrast. The
 input norm is computed per frame, prototype norms are feature-vector norms,
 and no temporal resampling or pooling is performed.
+`anchor=None` uses a zero `(F,)` vector. Feature-axis scaling prevents norm
+overflow, and zero anchored vectors contribute zero. `eps` must be finite
+and positive.
 
 ### `native_dynamic_hyb_fpde`
 
@@ -647,6 +652,11 @@ endpoint. `normalize="none"` is the default. `normalize="l1"` normalizes each
 full attribution matrix component and does not change the time axis.
 
 Returns `(Phi_hyb, E_hyb, details)`.
+Full-matrix L1 scaling can change other frames' normalized magnitudes when
+one frame changes, but it never interpolates or changes the time axis.
+At `lambda_hyb=0`, an unrepresentable unused Diff component is recorded as
+`details["diff_evidence"]=None`; cosine attribution remains available.
+An unrepresentable unused Diff L1 scale is recorded as `details["diff_scale"]=None`.
 
 ### `native_dynamic_fpde_explain_one`
 
@@ -674,6 +684,12 @@ Explains one native-time sequence with feature-vector prototypes. The returned
 include `time_mode="native"`, `temporal_resampling=False`,
 `temporal_pooling=False`, `prototype_kind="feature_vector"`, `input_shape`,
 and `output_shape`.
+Invalid `lambda_hyb` or `normalize` values raise `ValueError` in every mode.
+Normalization applies only to Hyb. NaN, infinite, empty, and mismatched-shape
+inputs are rejected. Required results outside finite float64 range raise
+`FloatingPointError`, including individual prototype scores even if the
+contrast is representable. Use `evidence` rather than subtracting separately
+rounded large scores when auditing the attribution sum.
 
 ### `native_dynamic_fpde_explain_batch`
 
@@ -698,6 +714,7 @@ native_dynamic_fpde_explain_batch(
 Explains a list of variable-length `(T_i, F)` arrays without padding,
 resampling, or dense tensor conversion. `p_targets` and `p_rivals` may be a
 single `(F,)` vector broadcast to all samples or one vector per sample.
+All samples must share `F`; an empty batch raises `ValueError`.
 
 ### Raw-Waveform Dynamic-FPDE API
 
