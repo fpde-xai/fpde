@@ -469,7 +469,10 @@ Phi_cos[t, f] =
 
 The input norm `||z[t]||_2` is computed per frame. Prototype norms are
 feature-vector norms. No time-axis resampling, pooling, or aggregation is
-performed.
+performed. Omitting `anchor` uses the zero feature vector. The implementation
+normalizes the anchored vectors separately, using feature-axis scaling to
+avoid overflowing norms or underflowing denominator products. Zero anchored
+vectors contribute zero evidence; `eps` must be finite and positive.
 
 ## Native-Time Dynamic-Hyb
 
@@ -485,6 +488,36 @@ Dynamic-Cos endpoint. The default `normalize="none"` mixes raw component
 matrices. If `normalize="l1"` is used, it normalizes the full attribution
 matrix for each component only; it does not resample, pool, or otherwise
 change the time axis.
+
+Full-matrix L1 normalization couples component scales across frames: changing
+one frame can change the normalized values at other frames. This is scalar
+normalization, without temporal interpolation or spreading. Use the default
+`normalize="none"` when frame-local dependence is required.
+
+### Native-Time validation and numerical limits
+
+Native-Time APIs reject empty frame or feature axes, mismatched feature-vector
+dimensions, and NaN or infinite inputs. An empty batch raises `ValueError`.
+The explanation APIs validate `lambda_hyb` in `[0, 1]` and `normalize` in
+`{"none", "l1"}` in every mode; mixing and normalization apply only to Hyb.
+
+Dynamic-Diff evaluates an algebraically equivalent difference of squares to
+avoid cancellation of large squared distances. Overflowing or severely
+cancelling intermediate coordinates are recovered with Python's public
+decimal arithmetic. Results use float64. If a required attribution, evidence,
+L1 scale, summary, or prototype score exceeds its finite range, the API raises
+`FloatingPointError` rather than returning NaN or infinity. Explanation objects
+also contain individual negative squared-distance scores: these can exceed
+float64's range even when the Diff contrast itself is representable. In that
+case, the low-level Diff API may succeed while the explanation API raises.
+Subtracting separately rounded large scores can also lose precision; use the
+returned `evidence` to audit the attribution sum.
+
+Cos explanations compute only cosine scores. At the pure Cos hybrid endpoint
+(`lambda_hyb=0`), an unrepresentable unused Diff component does not prevent
+cosine attribution; `details["diff_evidence"]` is `None` in that case.
+An unrepresentable unused Diff L1 scale is likewise recorded as
+`details["diff_scale"]=None`.
 
 ## Native-Time Usage
 
